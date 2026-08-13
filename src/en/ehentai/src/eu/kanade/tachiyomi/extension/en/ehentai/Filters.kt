@@ -30,6 +30,18 @@ internal class SearchTitlesFilter : Filter.CheckBox("Search gallery titles", tru
 
 internal class SearchTagsFilter : Filter.CheckBox("Search gallery tags", true)
 
+internal class SearchDescriptionFilter : Filter.CheckBox("Search gallery descriptions", false)
+
+internal class SearchTorrentNamesFilter : Filter.CheckBox("Search torrent file names", false)
+
+internal class OnlyTorrentsFilter : Filter.CheckBox("Only galleries with torrents", false)
+
+internal class ShowExpungedFilter : Filter.CheckBox("Show expunged galleries", false)
+
+internal class LowPowerTagsFilter : Filter.CheckBox("Search low-power tags", false)
+
+internal class DownvotedTagsFilter : Filter.CheckBox("Search downvoted tags", false)
+
 internal class MinimumRatingFilter : Filter.Select<String>(
     "Minimum rating",
     ratings.map { it.first }.toTypedArray(),
