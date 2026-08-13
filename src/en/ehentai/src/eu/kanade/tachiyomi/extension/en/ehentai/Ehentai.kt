@@ -55,6 +55,24 @@ abstract class Ehentai : KeiSource() {
             if (filters.firstInstanceOrNull<SearchTagsFilter>()?.state != false) {
                 addQueryParameter("f_stags", "on")
             }
+            if (filters.firstInstanceOrNull<SearchDescriptionFilter>()?.state == true) {
+                addQueryParameter("f_sdesc", "on")
+            }
+            if (filters.firstInstanceOrNull<SearchTorrentNamesFilter>()?.state == true) {
+                addQueryParameter("f_storr", "on")
+            }
+            if (filters.firstInstanceOrNull<OnlyTorrentsFilter>()?.state == true) {
+                addQueryParameter("f_sto", "on")
+            }
+            if (filters.firstInstanceOrNull<ShowExpungedFilter>()?.state == true) {
+                addQueryParameter("f_sh", "on")
+            }
+            if (filters.firstInstanceOrNull<LowPowerTagsFilter>()?.state == true) {
+                addQueryParameter("f_sdt1", "on")
+            }
+            if (filters.firstInstanceOrNull<DownvotedTagsFilter>()?.state == true) {
+                addQueryParameter("f_sdt2", "on")
+            }
             minimumRating?.value()?.let {
                 addQueryParameter("f_sr", "on")
                 addQueryParameter("f_srdd", it)
@@ -69,15 +87,19 @@ abstract class Ehentai : KeiSource() {
 
     private fun parseMangaList(document: Document): MangasPage {
         val mangas = document.select("table.itg.gltc > tbody > tr, table.itg.gltc > tr").mapNotNull { row ->
-            val galleryLink = row.selectFirst(".gl3c.glname > a[href]") ?: return@mapNotNull null
+            val galleryLink = row.selectFirst(".gl3c.glname > a[href], .glname > a[href]")
+                ?: return@mapNotNull null
             val title = galleryLink.text().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             val galleryUrl = galleryLink.absUrl("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val cover = row.selectFirst(".glthumb img, .gl2c img")
+            val coverUrl = cover?.attr("data-src")?.takeIf { it.isNotEmpty() }
+                ?: cover?.absUrl("src")?.takeUnless { it.startsWith("data:") }
 
             SManga.create().apply {
                 setUrlWithoutDomain(galleryUrl)
                 this.title = title
-                thumbnail_url = row.selectFirst(".gl2c img")?.absUrl("src")
-                genre = row.select(".gl3c .gt[title]")
+                thumbnail_url = coverUrl
+                genre = row.select(".gt[title]")
                     .map { it.attr("title") }
                     .takeIf { it.isNotEmpty() }
                     ?.joinToString()
@@ -85,14 +107,20 @@ abstract class Ehentai : KeiSource() {
         }
 
         val hasNextPage = document.select("a[href]").any { anchor ->
-            anchor.text().startsWith("Next", ignoreCase = true)
+            anchor.id() == "dnext" || anchor.text().startsWith("Next", ignoreCase = true)
         }
         return MangasPage(mangas, hasNextPage)
     }
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         if (url.host != baseUrl.toHttpUrl().host || !url.encodedPath.startsWith("/g/")) return null
-        return parseMangaDetails(client.get(url).asJsoup())
+
+        val manga = SManga.create().apply {
+            setUrlWithoutDomain(url.toString())
+        }
+        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true).manga.apply {
+            initialized = true
+        }
     }
 
     override suspend fun fetchMangaUpdate(
@@ -102,13 +130,15 @@ abstract class Ehentai : KeiSource() {
         fetchChapters: Boolean,
     ): SMangaUpdate {
         val document = client.get(getMangaUrl(manga)).asJsoup()
-        return SMangaUpdate(parseMangaDetails(document), listOf(parseGalleryChapter(manga, document)))
+        val details = parseMangaDetails(document)
+        val chapterList = if (fetchChapters) listOf(parseGalleryChapter(details, document)) else chapters
+        return SMangaUpdate(details, chapterList)
     }
 
     private fun parseMangaDetails(document: Document): SManga = SManga.create().apply {
         setUrlWithoutDomain(document.location())
-        title = document.selectFirst("#gn")!!.text()
-        thumbnail_url = document.selectFirst("#gd1")
+        title = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: "E-Hentai Gallery"
+        thumbnail_url = document.selectFirst("#gd1 > div[style], #gd1 [style]")
             ?.attr("style")
             ?.let { coverUrlRegex.find(it)?.groupValues?.getOrNull(1) }
 
@@ -145,7 +175,7 @@ abstract class Ehentai : KeiSource() {
 
     private fun parseGalleryChapter(manga: SManga, document: Document): SChapter = SChapter.create().apply {
         url = manga.url
-        name = document.selectFirst("#gn")!!.text()
+        name = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: manga.title
         chapter_number = 1F
     }
 
@@ -164,25 +194,30 @@ abstract class Ehentai : KeiSource() {
             imagePages += client.get(gridUrl).asJsoup().imagePageUrls()
         }
 
-        return imagePages.mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
+        return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
     }
 
     private fun Document.imagePageUrls(): List<String> =
-        select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf(String::isNotEmpty) }
+        select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf { url -> "/s/" in url } }
 
     override suspend fun getImageUrl(page: Page): String {
         val document = client.get(page.url).asJsoup()
-        return document.selectFirst("a[href*='/fullimg/']")?.absUrl("href")
-            ?.takeIf { it.isNotEmpty() }
-            ?: document.selectFirst("#img")?.absUrl("src").orEmpty()
+        return document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+            ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
     }
 
     override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
-        Filter.Header("Filters use E-Hentai's public search options."),
+        Filter.Header("E-Hentai public search filters"),
         CategoryFilter(),
         Filter.Separator(),
         SearchTitlesFilter(),
         SearchTagsFilter(),
+        SearchDescriptionFilter(),
+        SearchTorrentNamesFilter(),
+        OnlyTorrentsFilter(),
+        ShowExpungedFilter(),
+        LowPowerTagsFilter(),
+        DownvotedTagsFilter(),
         MinimumRatingFilter(),
         MinimumPagesFilter(),
         MaximumPagesFilter(),
