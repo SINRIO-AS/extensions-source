@@ -149,7 +149,7 @@ abstract class Ehentai : KeiSource() {
         fetchDetails: Boolean,
         fetchChapters: Boolean,
     ): SMangaUpdate {
-        val document = galleryDocument(getMangaUrl(manga))
+        val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
         val details = parseMangaDetails(document)
         // Every E-Hentai gallery is one readable work. Always expose that chapter
         // after a successful details request rather than waiting for a separate list.
@@ -215,7 +215,7 @@ abstract class Ehentai : KeiSource() {
     }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        val chapterUrl = getChapterUrl(chapter)
+        val chapterUrl = getChapterUrl(chapter).toHttpUrl()
         val firstDocument = galleryDocument(chapterUrl)
         val imagePages = firstDocument.imagePageUrls().toMutableList()
         val lastGridPage = firstDocument.select(".gtb a[href*='?p=']")
@@ -223,7 +223,7 @@ abstract class Ehentai : KeiSource() {
             ?: 0
 
         for (gridPage in 1..lastGridPage) {
-            val gridUrl = chapterUrl.toHttpUrl().newBuilder()
+            val gridUrl = chapterUrl.newBuilder()
                 .addQueryParameter("p", gridPage.toString())
                 .build()
             imagePages += galleryDocument(gridUrl).imagePageUrls()
@@ -248,7 +248,7 @@ abstract class Ehentai : KeiSource() {
     }
 
     override fun imageRequest(page: Page): Request =
-        GET(page.imageUrl!!, headersBuilder().set("Referer", page.url).build())
+        GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
 
     override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
         Filter.Header("E-Hentai public search filters"),
