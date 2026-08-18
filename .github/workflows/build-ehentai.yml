@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build E-Hentai debug APK
+    name: Build signed E-Hentai APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -33,13 +33,40 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
 
-      - name: Assemble E-Hentai APK
-        run: ./gradlew :src:en:ehentai:spotlessApply src:en:ehentai:assembleDebug --stacktrace
+      - name: Format E-Hentai source
+        run: ./gradlew formatKotlin --stacktrace
 
-      - name: Upload E-Hentai APK
+      - name: Assemble E-Hentai APK
+        run: ./gradlew src:en:ehentai:assembleDebug --stacktrace
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.EHENTAI_KEYSTORE_B64 }}
+        run: |
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/ehentai-signing.jks"
+
+      - name: Sign E-Hentai APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.EHENTAI_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.EHENTAI_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.EHENTAI_KEY_ALIAS }}
+        run: |
+          mkdir -p src/en/ehentai/build/outputs/apk/signed
+          unsigned_apk=$(find src/en/ehentai/build/outputs/apk/debug -name '*.apk' -print -quit)
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" sign \
+            --ks "$RUNNER_TEMP/ehentai-signing.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out src/en/ehentai/build/outputs/apk/signed/tachiyomi-en.ehentai-v1.6.3.apk \
+            "$unsigned_apk"
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" verify --verbose --print-certs \
+            src/en/ehentai/build/outputs/apk/signed/tachiyomi-en.ehentai-v1.6.3.apk
+
+      - name: Upload signed E-Hentai APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: aniyomi-en-ehentai-debug-apk
-          path: src/en/ehentai/build/outputs/apk/debug/*.apk
+          name: aniyomi-en-ehentai-v1.6.3-signed-apk
+          path: src/en/ehentai/build/outputs/apk/signed/*.apk
           if-no-files-found: error
           retention-days: 30
