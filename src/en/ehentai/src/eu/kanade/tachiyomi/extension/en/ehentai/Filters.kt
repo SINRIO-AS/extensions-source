@@ -74,7 +74,7 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
             
             CategoryOption("Manga", 4),
             
-            CategoryOption("Comics", 0, "comic\$"),
+            CategoryOption("Comics", 512, "other:comic\$"),
             
             CategoryOption("Artist CG", 8),
             
