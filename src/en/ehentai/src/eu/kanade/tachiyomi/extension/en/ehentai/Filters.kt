@@ -4,13 +4,26 @@ import eu.kanade.tachiyomi.source.model.Filter
 
 internal class CategoryOption(name: String, val value: Int) : Filter.CheckBox(name, false)
 
+internal class CategoryModeFilter : Filter.Select<String>(
+    "Category selection",
+    arrayOf("Show all categories", "Only checked categories", "Exclude checked categories"),
+)
+
 internal class CategoryFilter : Filter.Group<CategoryOption>(
-    "Exclude categories",
+    "Gallery categories",
     categories.map { CategoryOption(it.first, it.second) },
 ) {
-    fun excludedMask(): Int = state.filter { it.state }.sumOf { it.value }
+    fun mask(mode: Int): Int {
+        val selected = state.filter { it.state }.sumOf { it.value }
+        return when (mode) {
+            1 -> selected.takeIf { it != 0 }?.let { allCategoriesMask and it.inv() } ?: 0
+            2 -> selected
+            else -> 0
+        }
+    }
 
     private companion object {
+        const val allCategoriesMask = 1023
         val categories = listOf(
             "Misc" to 1,
             "Doujinshi" to 2,
@@ -25,6 +38,38 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
         )
     }
 }
+
+internal class LanguageFilter : Filter.Select<String>(
+    "Gallery language",
+    languages.map { it.first }.toTypedArray(),
+) {
+    fun queryValue(): String? = languages[state].second
+
+    private companion object {
+        val languages = listOf(
+            "All languages" to null,
+            "Japanese" to "language:japanese",
+            "English" to "language:english",
+            "Chinese" to "language:chinese",
+            "Korean" to "language:korean",
+            "Spanish" to "language:spanish",
+            "French" to "language:french",
+            "German" to "language:german",
+            "Italian" to "language:italian",
+            "Portuguese" to "language:portuguese",
+            "Russian" to "language:russian",
+            "Thai" to "language:thai",
+            "Vietnamese" to "language:vietnamese",
+            "Translated" to "language:translated",
+            "No language" to "language:n/a",
+            "Other language" to "language:other",
+        )
+    }
+}
+
+internal class IncludeTagsFilter : Filter.Text("Include tags (comma separated)")
+
+internal class ExcludeTagsFilter : Filter.Text("Exclude tags (comma separated)")
 
 internal class SearchTitlesFilter : Filter.CheckBox("Search gallery titles", true)
 
@@ -68,3 +113,8 @@ internal fun String.pageCountOrNull(): String? = trim().takeIf { it.isNotEmpty()
         "Page count must be a non-negative whole number"
     }
 }
+
+internal fun String.searchTerms(exclude: Boolean = false): List<String> =
+    split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { term ->
+        if (exclude) "-$term" else term
+    }
