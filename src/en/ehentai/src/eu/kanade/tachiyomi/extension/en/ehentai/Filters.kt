@@ -6,7 +6,7 @@ internal class CategoryOption(name: String, val value: Int) : Filter.CheckBox(na
 
 internal class CategoryModeFilter : Filter.Select<String>(
     "Category selection",
-    arrayOf("Show all categories", "Only checked categories", "Exclude checked categories"),
+    arrayOf("Only checked categories", "Exclude checked categories", "Show all categories"),
 )
 
 internal class CategoryFilter : Filter.Group<CategoryOption>(
@@ -14,10 +14,10 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
     categories.map { CategoryOption(it.first, it.second) },
 ) {
     fun mask(mode: Int): Int {
-        val selected = state.filter { it.state }.sumOf { it.value }
+        val selected = state.filter { it.state }.fold(0) { mask, option -> mask or option.value }
         return when (mode) {
-            1 -> selected.takeIf { it != 0 }?.let { ALL_CATEGORIES_MASK and it.inv() } ?: 0
-            2 -> selected
+            0 -> selected.takeIf { it != 0 }?.let { ALL_CATEGORIES_MASK and it.inv() } ?: 0
+            1 -> selected
             else -> 0
         }
     }
@@ -28,6 +28,7 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
             "Misc" to 1,
             "Doujinshi" to 2,
             "Manga" to 4,
+            "Comics" to 4,
             "Artist CG" to 8,
             "Game CG" to 16,
             "Image Set" to 32,
