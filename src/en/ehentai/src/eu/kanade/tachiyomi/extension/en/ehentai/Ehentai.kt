@@ -72,7 +72,7 @@ abstract class Ehentai : KeiSource() {
             addQueryParameter("f_cats", categoryFilter?.mask(categoryMode?.state ?: 0).toString())
             searchQuery.takeIf { it.isNotEmpty() }?.let { addQueryParameter("f_search", it) }
 
-            if (filters.firstInstanceOrNull<SearchTitlesFilter>()?.state != false) {
+            if (!hasCategoryTag && filters.firstInstanceOrNull<SearchTitlesFilter>()?.state != false) {
                 addQueryParameter("f_sname", "on")
             }
             if (hasCategoryTag || filters.firstInstanceOrNull<SearchTagsFilter>()?.state != false) {
@@ -105,9 +105,11 @@ abstract class Ehentai : KeiSource() {
         }.build()
 
         var document = client.get(firstUrl).asJsoup()
+        val visitedPages = mutableSetOf(firstUrl.toString())
         repeat(page - 1) {
             val nextUrl = document.selectFirst("#dnext[href]")?.absUrl("href")?.toHttpUrl()
                 ?: return@repeat
+            if (!visitedPages.add(nextUrl.toString())) return@repeat
             document = client.get(nextUrl).asJsoup()
         }
         return parseMangaList(document)
@@ -134,7 +136,8 @@ abstract class Ehentai : KeiSource() {
             }
         }
 
-        val hasNextPage = document.selectFirst("#dnext[href]") != null
+        val nextUrl = document.selectFirst("#dnext[href]")?.absUrl("href")
+        val hasNextPage = !nextUrl.isNullOrEmpty() && nextUrl != document.location()
         return MangasPage(mangas.distinctBy { it.url }, hasNextPage)
     }
 
