@@ -7,6 +7,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
@@ -17,14 +18,23 @@ import keiyoushi.utils.firstInstanceOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.jsoup.nodes.Document
+import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.seconds
 
 @Source
 abstract class Ehentai : KeiSource() {
 
     override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
-        rateLimit(1, 3.seconds) { it.host == baseUrl.toHttpUrl().host }
+        // The former one-request-per-three-seconds throttle made ordinary 20–40 page
+        // galleries unusably slow. A short, bounded burst stays polite while allowing
+        // the reader to resolve a normal gallery in seconds rather than minutes.
+        rateLimit(4, 1.seconds) { it.host == baseUrl.toHttpUrl().host }
+
+    override fun headersBuilder() = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
     override suspend fun getPopularManga(page: Int): MangasPage =
         getGalleryList(page, "", FilterList())
@@ -37,17 +47,27 @@ abstract class Ehentai : KeiSource() {
 
     private suspend fun getGalleryList(page: Int, query: String, filters: FilterList): MangasPage {
         val categoryFilter = filters.firstInstanceOrNull<CategoryFilter>()
+        val categoryMode = filters.firstInstanceOrNull<CategoryModeFilter>()
+        val language = filters.firstInstanceOrNull<LanguageFilter>()
+        val includeTags = filters.firstInstanceOrNull<IncludeTagsFilter>()?.state?.searchTerms().orEmpty()
+        val excludeTags = filters.firstInstanceOrNull<ExcludeTagsFilter>()?.state?.searchTerms(exclude = true).orEmpty()
         val minimumRating = filters.firstInstanceOrNull<MinimumRatingFilter>()
         val minimumPages = filters.firstInstanceOrNull<MinimumPagesFilter>()?.state?.pageCountOrNull()
         val maximumPages = filters.firstInstanceOrNull<MaximumPagesFilter>()?.state?.pageCountOrNull()
+        val searchQuery = buildList {
+            query.trim().takeIf { it.isNotEmpty() }?.let(::add)
+            language?.queryValue()?.let(::add)
+            addAll(includeTags)
+            addAll(excludeTags)
+        }.joinToString(" ")
 
         require(minimumPages == null || maximumPages == null || minimumPages.toInt() <= maximumPages.toInt()) {
             "Minimum pages cannot exceed maximum pages"
         }
 
         val url = baseUrl.toHttpUrl().newBuilder().apply {
-            addQueryParameter("f_cats", (categoryFilter?.excludedMask() ?: 0).toString())
-            query.trim().takeIf { it.isNotEmpty() }?.let { addQueryParameter("f_search", it) }
+            addQueryParameter("f_cats", categoryFilter?.mask(categoryMode?.state ?: 0).toString())
+            searchQuery.takeIf { it.isNotEmpty() }?.let { addQueryParameter("f_search", it) }
 
             if (filters.firstInstanceOrNull<SearchTitlesFilter>()?.state != false) {
                 addQueryParameter("f_sname", "on")
@@ -129,10 +149,25 @@ abstract class Ehentai : KeiSource() {
         fetchDetails: Boolean,
         fetchChapters: Boolean,
     ): SMangaUpdate {
-        val document = client.get(getMangaUrl(manga)).asJsoup()
+        val document = galleryDocument(getMangaUrl(manga))
         val details = parseMangaDetails(document)
+        // Every E-Hentai gallery is one readable work. Always expose that chapter
+        // after a successful details request rather than waiting for a separate list.
         val chapterList = if (fetchChapters) listOf(parseGalleryChapter(details, document)) else chapters
         return SMangaUpdate(details, chapterList)
+    }
+
+    private suspend fun galleryDocument(url: HttpUrl): Document {
+        var latest: Document? = null
+        repeat(3) { attempt ->
+            val document = client.get(url).asJsoup()
+            latest = document
+            if (document.selectFirst("#gn") != null && document.selectFirst("#gdt") != null) {
+                return document
+            }
+            if (attempt < 2) delay((attempt + 1) * 500L)
+        }
+        return latest ?: error("Unable to load the E-Hentai gallery")
     }
 
     private fun parseMangaDetails(document: Document): SManga = SManga.create().apply {
@@ -181,7 +216,7 @@ abstract class Ehentai : KeiSource() {
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         val chapterUrl = getChapterUrl(chapter)
-        val firstDocument = client.get(chapterUrl).asJsoup()
+        val firstDocument = galleryDocument(chapterUrl)
         val imagePages = firstDocument.imagePageUrls().toMutableList()
         val lastGridPage = firstDocument.select(".gtb a[href*='?p=']")
             .maxOfOrNull { it.absUrl("href").toHttpUrl().queryParameter("p")?.toIntOrNull() ?: 0 }
@@ -191,7 +226,7 @@ abstract class Ehentai : KeiSource() {
             val gridUrl = chapterUrl.toHttpUrl().newBuilder()
                 .addQueryParameter("p", gridPage.toString())
                 .build()
-            imagePages += client.get(gridUrl).asJsoup().imagePageUrls()
+            imagePages += galleryDocument(gridUrl).imagePageUrls()
         }
 
         return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
@@ -201,15 +236,30 @@ abstract class Ehentai : KeiSource() {
         select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf { url -> "/s/" in url } }
 
     override suspend fun getImageUrl(page: Page): String {
-        val document = client.get(page.url).asJsoup()
-        return document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
-            ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+        var imageUrl = ""
+        repeat(3) { attempt ->
+            val document = client.get(page.url.toHttpUrl()).asJsoup()
+            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+            if (imageUrl.isNotEmpty()) return imageUrl
+            if (attempt < 2) delay((attempt + 1) * 500L)
+        }
+        error("E-Hentai did not return an image URL for this page")
     }
+
+    override fun imageRequest(page: Page): Request =
+        GET(page.imageUrl!!, headersBuilder().set("Referer", page.url).build())
 
     override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
         Filter.Header("E-Hentai public search filters"),
+        CategoryModeFilter(),
         CategoryFilter(),
         Filter.Separator(),
+        LanguageFilter(),
+        IncludeTagsFilter(),
+        ExcludeTagsFilter(),
+        Filter.Separator(),
+        Filter.Header("Search fields and availability"),
         SearchTitlesFilter(),
         SearchTagsFilter(),
         SearchDescriptionFilter(),
@@ -218,6 +268,8 @@ abstract class Ehentai : KeiSource() {
         ShowExpungedFilter(),
         LowPowerTagsFilter(),
         DownvotedTagsFilter(),
+        Filter.Separator(),
+        Filter.Header("Rating and page count"),
         MinimumRatingFilter(),
         MinimumPagesFilter(),
         MaximumPagesFilter(),
