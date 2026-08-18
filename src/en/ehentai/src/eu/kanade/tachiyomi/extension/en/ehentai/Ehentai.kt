@@ -1,284 +1,270 @@
 package eu.kanade.tachiyomi.extension.en.ehentai
 
+
+
 import eu.kanade.tachiyomi.source.model.Filter
+
 import eu.kanade.tachiyomi.source.model.FilterList
+
 import eu.kanade.tachiyomi.source.model.MangasPage
+
 import eu.kanade.tachiyomi.source.model.Page
+
 import eu.kanade.tachiyomi.source.model.SChapter
+
 import eu.kanade.tachiyomi.source.model.SManga
+
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
+
 import eu.kanade.tachiyomi.network.GET
+
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
+
 import eu.kanade.tachiyomi.util.asJsoup
+
 import keiyoushi.annotation.Source
+
 import keiyoushi.network.get
+
 import keiyoushi.network.rateLimit
+
 import keiyoushi.source.KeiSource
+
 import keiyoushi.utils.firstInstanceOrNull
+
 import okhttp3.Headers
+
 import okhttp3.HttpUrl
+
 import okhttp3.HttpUrl.Companion.toHttpUrl
+
 import okhttp3.OkHttpClient
+
 import okhttp3.Request
+
 import org.jsoup.nodes.Document
+
 import kotlinx.coroutines.delay
+
 import kotlin.time.Duration.Companion.seconds
 
+
+
 @Source
+
 abstract class Ehentai : KeiSource() {
+    
 
+    
     override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder =
+    
         // The former one-request-per-three-seconds throttle made ordinary 20–40 page
+    
         // galleries unusably slow. A short, bounded burst stays polite while allowing
+    
         // the reader to resolve a normal gallery in seconds rather than minutes.
+    
         rateLimit(4, 1.seconds) { it.host == baseUrl.toHttpUrl().host }
+        
 
+        
     override fun Headers.Builder.configureHeaders() =
+    
         add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        
 
+        
     override suspend fun getPopularManga(page: Int): MangasPage =
+    
         getGalleryList(page, "", FilterList())
+        
 
+        
     override suspend fun getLatestUpdates(page: Int): MangasPage =
+    
         getGalleryList(page, "", FilterList())
+        
 
+        
     override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage =
+    
         getGalleryList(page, query, filters)
+        
 
+        
     private suspend fun getGalleryList(page: Int, query: String, filters: FilterList): MangasPage {
+        
         val categoryFilter = filters.firstInstanceOrNull<CategoryFilter>()
+        
         val categoryMode = filters.firstInstanceOrNull<CategoryModeFilter>()
+        
         val categoryTags = categoryFilter?.queryTags().orEmpty()
+        
         val hasCategoryTag = categoryFilter?.hasQueryTag() == true
+        
         val language = filters.firstInstanceOrNull<LanguageFilter>()
+        
         val includeTags = filters.firstInstanceOrNull<IncludeTagsFilter>()?.state?.searchTerms().orEmpty()
+        
         val excludeTags = filters.firstInstanceOrNull<ExcludeTagsFilter>()?.state?.searchTerms(exclude = true).orEmpty()
+        
         val minimumRating = filters.firstInstanceOrNull<MinimumRatingFilter>()
+        
         val minimumPages = filters.firstInstanceOrNull<MinimumPagesFilter>()?.state?.pageCountOrNull()
+        
         val maximumPages = filters.firstInstanceOrNull<MaximumPagesFilter>()?.state?.pageCountOrNull()
+        
         val searchQuery = buildList {
+            
             query.trim().takeIf { it.isNotEmpty() }?.let(::add)
+            
             language?.queryValue()?.let(::add)
+            
             addAll(categoryTags)
+            
             addAll(includeTags)
+            
             addAll(excludeTags)
+            
         }.joinToString(" ")
+        
 
+        
         require(minimumPages == null || maximumPages == null || minimumPages.toInt() <= maximumPages.toInt()) {
+            
             "Minimum pages cannot exceed maximum pages"
+            
         }
+        
 
-        val url = baseUrl.toHttpUrl().newBuilder().apply {
+        
+        val firstUrl = baseUrl.toHttpUrl().newBuilder().apply {
+            
             addQueryParameter("f_cats", categoryFilter?.mask(categoryMode?.state ?: 0).toString())
+            
             searchQuery.takeIf { it.isNotEmpty() }?.let { addQueryParameter("f_search", it) }
+            
 
+            
             if (filters.firstInstanceOrNull<SearchTitlesFilter>()?.state != false) {
+                
                 addQueryParameter("f_sname", "on")
+                
             }
+            
             if (hasCategoryTag || filters.firstInstanceOrNull<SearchTagsFilter>()?.state != false) {
+                
                 addQueryParameter("f_stags", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<SearchDescriptionFilter>()?.state == true) {
+                
                 addQueryParameter("f_sdesc", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<SearchTorrentNamesFilter>()?.state == true) {
+                
                 addQueryParameter("f_storr", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<OnlyTorrentsFilter>()?.state == true) {
+                
                 addQueryParameter("f_sto", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<ShowExpungedFilter>()?.state == true) {
+                
                 addQueryParameter("f_sh", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<LowPowerTagsFilter>()?.state == true) {
+                
                 addQueryParameter("f_sdt1", "on")
+                
             }
+            
             if (filters.firstInstanceOrNull<DownvotedTagsFilter>()?.state == true) {
+                
                 addQueryParameter("f_sdt2", "on")
+                
             }
+            
             minimumRating?.value()?.let {
-                addQueryParameter("f_sr", "on")
-                addQueryParameter("f_srdd", it)
-            }
-            minimumPages?.let { addQueryParameter("f_spf", it) }
-            maximumPages?.let { addQueryParameter("f_spt", it) }
-            if (page > 1) addQueryParameter("page", (page - 1).toString())
-        }.build()
+                
+        
 
-        return parseMangaList(client.get(url).asJsoup())
-    }
 
-    private fun parseMangaList(document: Document): MangasPage {
-        val mangas = document.select("table.itg.gltc > tbody > tr, table.itg.gltc > tr").mapNotNull { row ->
-            val galleryLink = row.selectFirst(".gl3c.glname > a[href], .glname > a[href]")
-                ?: return@mapNotNull null
-            val title = galleryLink.text().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val galleryUrl = galleryLink.absUrl("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val cover = row.selectFirst(".glthumb img, .gl2c img")
-            val coverUrl = cover?.attr("data-src")?.takeIf { it.isNotEmpty() }
-                ?: cover?.absUrl("src")?.takeUnless { it.startsWith("data:") }
 
-            SManga.create().apply {
-                setUrlWithoutDomain(galleryUrl)
-                this.title = title
-                thumbnail_url = coverUrl
-                genre = row.select(".gt[title]")
-                    .map { it.attr("title") }
-                    .takeIf { it.isNotEmpty() }
-                    ?.joinToString()
-            }
-        }
 
-        val hasNextPage = document.select("a[href]").any { anchor ->
-            anchor.id() == "dnext" || anchor.text().startsWith("Next", ignoreCase = true)
-        }
-        return MangasPage(mangas, hasNextPage)
-    }
 
-    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
-        if (url.host != baseUrl.toHttpUrl().host || !url.encodedPath.startsWith("/g/")) return null
 
-        val manga = SManga.create().apply {
-            setUrlWithoutDomain(url.toString())
-        }
-        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true).manga.apply {
-            initialized = true
-        }
-    }
 
-    override suspend fun fetchMangaUpdate(
-        manga: SManga,
-        chapters: List<SChapter>,
-        fetchDetails: Boolean,
-        fetchChapters: Boolean,
-    ): SMangaUpdate {
-        val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
-        val details = parseMangaDetails(document)
-        // Every E-Hentai gallery is one readable work. Always expose that chapter
-        // after a successful details request rather than waiting for a separate list.
-        val chapterList = if (fetchChapters) listOf(parseGalleryChapter(details, document)) else chapters
-        return SMangaUpdate(details, chapterList)
-    }
 
-    private suspend fun galleryDocument(url: HttpUrl): Document {
-        var latest: Document? = null
-        repeat(3) { attempt ->
-            val document = client.get(url).asJsoup()
-            latest = document
-            if (document.selectFirst("#gn") != null && document.selectFirst("#gdt") != null) {
-                return document
-            }
-            if (attempt < 2) delay((attempt + 1) * 500L)
-        }
-        return latest ?: error("Unable to load the E-Hentai gallery")
-    }
 
-    private fun parseMangaDetails(document: Document): SManga = SManga.create().apply {
-        setUrlWithoutDomain(document.location())
-        title = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: "E-Hentai Gallery"
-        thumbnail_url = document.selectFirst("#gd1 > div[style], #gd1 [style]")
-            ?.attr("style")
-            ?.let { coverUrlRegex.find(it)?.groupValues?.getOrNull(1) }
 
-        val tagTitles = document.select("#taglist .gt[title]").map { it.attr("title") }
-        genre = buildList {
-            document.selectFirst("#gdc")?.text()?.takeIf { it.isNotEmpty() }?.let(::add)
-            addAll(tagTitles)
-        }.takeIf { it.isNotEmpty() }?.joinToString()
-        author = tagTitles.filter { it.startsWith("artist:") || it.startsWith("group:") }
-            .map { it.substringAfter(':') }
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString()
-        artist = tagTitles.filter { it.startsWith("artist:") }
-            .map { it.substringAfter(':') }
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString()
-        status = SManga.COMPLETED
-        update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
 
-        description = buildString {
-            document.selectFirst("#gj")?.text()?.takeIf { it.isNotEmpty() }?.let {
-                appendLine(it)
-                appendLine()
-            }
-            document.select("#gdd tr").forEach { row ->
-                val label = row.selectFirst(".gdt1")?.text()
-                val value = row.selectFirst(".gdt2")?.text()
-                if (!label.isNullOrEmpty() && !value.isNullOrEmpty()) {
-                    appendLine("$label $value")
-                }
-            }
-        }.trim().takeIf { it.isNotEmpty() }
-    }
 
-    private fun parseGalleryChapter(manga: SManga, document: Document): SChapter = SChapter.create().apply {
-        url = manga.url
-        name = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: manga.title
-        chapter_number = 1F
-    }
 
-    override suspend fun getPageList(chapter: SChapter): List<Page> {
-        val chapterUrl = getChapterUrl(chapter).toHttpUrl()
-        val firstDocument = galleryDocument(chapterUrl)
-        val imagePages = firstDocument.imagePageUrls().toMutableList()
-        val lastGridPage = firstDocument.select(".gtb a[href*='?p=']")
-            .maxOfOrNull { it.absUrl("href").toHttpUrl().queryParameter("p")?.toIntOrNull() ?: 0 }
-            ?: 0
 
-        for (gridPage in 1..lastGridPage) {
-            val gridUrl = chapterUrl.newBuilder()
-                .addQueryParameter("p", gridPage.toString())
-                .build()
-            imagePages += galleryDocument(gridUrl).imagePageUrls()
-        }
 
-        return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
-    }
 
-    private fun Document.imagePageUrls(): List<String> =
-        select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf { url -> "/s/" in url } }
 
-    override suspend fun getImageUrl(page: Page): String {
-        var imageUrl = ""
-        repeat(3) { attempt ->
-            val document = client.get(page.url.toHttpUrl()).asJsoup()
-            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
-                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
-            if (imageUrl.isNotEmpty()) return imageUrl
-            if (attempt < 2) delay((attempt + 1) * 500L)
-        }
-        error("E-Hentai did not return an image URL for this page")
-    }
 
-    override fun imageRequest(page: Page): Request =
-        GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
 
-    override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
-        Filter.Header("E-Hentai public search filters"),
-        CategoryModeFilter(),
-        CategoryFilter(),
-        Filter.Separator(),
-        LanguageFilter(),
-        IncludeTagsFilter(),
-        ExcludeTagsFilter(),
-        Filter.Separator(),
-        Filter.Header("Search fields and availability"),
-        SearchTitlesFilter(),
-        SearchTagsFilter(),
-        SearchDescriptionFilter(),
-        SearchTorrentNamesFilter(),
-        OnlyTorrentsFilter(),
-        ShowExpungedFilter(),
-        LowPowerTagsFilter(),
-        DownvotedTagsFilter(),
-        Filter.Separator(),
-        Filter.Header("Rating and page count"),
-        MinimumRatingFilter(),
-        MinimumPagesFilter(),
-        MaximumPagesFilter(),
-    )
 
-    private companion object {
-        val coverUrlRegex = Regex("""url\(['\"]?([^'")]+)""")
-    }
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
