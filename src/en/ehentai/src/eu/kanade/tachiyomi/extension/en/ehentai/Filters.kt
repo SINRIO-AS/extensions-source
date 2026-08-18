@@ -1,7 +1,11 @@
 package eu.kanade.tachiyomi.extension.en.ehentai
 
 
+
+
 import eu.kanade.tachiyomi.source.model.Filter
+
+
 
 
 internal class CategoryOption(
@@ -11,10 +15,14 @@ internal class CategoryOption(
 ) : Filter.CheckBox(name, false)
 
 
+
+
 internal class CategoryModeFilter : Filter.Select<String>(
     "Category selection",
     arrayOf("Only checked categories", "Exclude checked categories", "Show all categories"),
 )
+
+
 
 
 internal class CategoryFilter : Filter.Group<CategoryOption>(
@@ -31,10 +39,16 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
     }
 
 
+
+
     fun queryTags(): List<String> = state.filter { it.state }.mapNotNull { it.queryTag }
 
 
+
+
     fun hasQueryTag(): Boolean = state.any { it.state && it.queryTag != null }
+
+
 
 
     private companion object {
@@ -43,7 +57,7 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
             CategoryOption("Misc", 1),
             CategoryOption("Doujinshi", 2),
             CategoryOption("Manga", 4),
-            CategoryOption("Comics", 0, "comic$"),
+            CategoryOption("Comics", 0, "comic\$"),
             CategoryOption("Artist CG", 8),
             CategoryOption("Game CG", 16),
             CategoryOption("Image Set", 32),
@@ -56,6 +70,8 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
 }
 
 
+
+
 internal class LanguageFilter : Filter.Select<String>(
     "Gallery language",
     languages.map { it.first }.toTypedArray(),
@@ -63,16 +79,9 @@ internal class LanguageFilter : Filter.Select<String>(
     fun queryValue(): String? = languages[state].second
 
 
+
+
     private companion object {
         val languages = listOf(
             "All languages" to null,
             "Japanese" to "language:japanese",
-            "English" to "language:english",
-            "Chinese" to "language:chinese",
-            "Korean" to "language:korean",
-            "Spanish" to "language:spanish",
-            "French" to "language:french",
-            "German" to "language:german",
-            "Italian" to "language:italian",
-            "Portuguese" to "language:portuguese",
-            "Russian" to "language:russian",
