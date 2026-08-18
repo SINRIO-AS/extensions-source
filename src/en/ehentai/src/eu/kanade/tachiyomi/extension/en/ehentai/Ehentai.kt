@@ -15,6 +15,7 @@ import keiyoushi.network.get
 import keiyoushi.network.rateLimit
 import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
+import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -32,9 +33,8 @@ abstract class Ehentai : KeiSource() {
         // the reader to resolve a normal gallery in seconds rather than minutes.
         rateLimit(4, 1.seconds) { it.host == baseUrl.toHttpUrl().host }
 
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
-        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    override fun Headers.Builder.configureHeaders() =
+        add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
     override suspend fun getPopularManga(page: Int): MangasPage =
         getGalleryList(page, "", FilterList())
