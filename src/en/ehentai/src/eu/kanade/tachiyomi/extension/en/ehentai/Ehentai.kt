@@ -48,6 +48,8 @@ abstract class Ehentai : KeiSource() {
     private suspend fun getGalleryList(page: Int, query: String, filters: FilterList): MangasPage {
         val categoryFilter = filters.firstInstanceOrNull<CategoryFilter>()
         val categoryMode = filters.firstInstanceOrNull<CategoryModeFilter>()
+        val categoryTags = categoryFilter?.queryTags().orEmpty()
+        val hasCategoryTag = categoryFilter?.hasQueryTag() == true
         val language = filters.firstInstanceOrNull<LanguageFilter>()
         val includeTags = filters.firstInstanceOrNull<IncludeTagsFilter>()?.state?.searchTerms().orEmpty()
         val excludeTags = filters.firstInstanceOrNull<ExcludeTagsFilter>()?.state?.searchTerms(exclude = true).orEmpty()
@@ -57,6 +59,7 @@ abstract class Ehentai : KeiSource() {
         val searchQuery = buildList {
             query.trim().takeIf { it.isNotEmpty() }?.let(::add)
             language?.queryValue()?.let(::add)
+            addAll(categoryTags)
             addAll(includeTags)
             addAll(excludeTags)
         }.joinToString(" ")
@@ -72,7 +75,7 @@ abstract class Ehentai : KeiSource() {
             if (filters.firstInstanceOrNull<SearchTitlesFilter>()?.state != false) {
                 addQueryParameter("f_sname", "on")
             }
-            if (filters.firstInstanceOrNull<SearchTagsFilter>()?.state != false) {
+            if (hasCategoryTag || filters.firstInstanceOrNull<SearchTagsFilter>()?.state != false) {
                 addQueryParameter("f_stags", "on")
             }
             if (filters.firstInstanceOrNull<SearchDescriptionFilter>()?.state == true) {
