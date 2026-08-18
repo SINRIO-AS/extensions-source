@@ -2,7 +2,11 @@ package eu.kanade.tachiyomi.extension.en.ehentai
 
 import eu.kanade.tachiyomi.source.model.Filter
 
-internal class CategoryOption(name: String, val value: Int) : Filter.CheckBox(name, false)
+internal class CategoryOption(
+    name: String,
+    val value: Int,
+    val queryTag: String? = null,
+) : Filter.CheckBox(name, false)
 
 internal class CategoryModeFilter : Filter.Select<String>(
     "Category selection",
@@ -11,7 +15,7 @@ internal class CategoryModeFilter : Filter.Select<String>(
 
 internal class CategoryFilter : Filter.Group<CategoryOption>(
     "Gallery categories",
-    categories.map { CategoryOption(it.first, it.second) },
+    categories,
 ) {
     fun mask(mode: Int): Int {
         val selected = state.filter { it.state }.fold(0) { mask, option -> mask or option.value }
@@ -22,20 +26,24 @@ internal class CategoryFilter : Filter.Group<CategoryOption>(
         }
     }
 
+    fun queryTags(): List<String> = state.filter { it.state }.mapNotNull { it.queryTag }
+
+    fun hasQueryTag(): Boolean = state.any { it.state && it.queryTag != null }
+
     private companion object {
         const val ALL_CATEGORIES_MASK = 1023
-        val categories = listOf(
-            "Misc" to 1,
-            "Doujinshi" to 2,
-            "Manga" to 4,
-            "Comics" to 4,
-            "Artist CG" to 8,
-            "Game CG" to 16,
-            "Image Set" to 32,
-            "Cosplay" to 64,
-            "Asian Porn" to 128,
-            "Non-H" to 256,
-            "Western" to 512,
+        val categories = arrayOf(
+            CategoryOption("Misc", 1),
+            CategoryOption("Doujinshi", 2),
+            CategoryOption("Manga", 4),
+            CategoryOption("Comics", 0, "comic$"),
+            CategoryOption("Artist CG", 8),
+            CategoryOption("Game CG", 16),
+            CategoryOption("Image Set", 32),
+            CategoryOption("Cosplay", 64),
+            CategoryOption("Asian Porn", 128),
+            CategoryOption("Non-H", 256),
+            CategoryOption("Western", 512),
         )
     }
 }
@@ -116,6 +124,6 @@ internal fun String.pageCountOrNull(): String? = trim().takeIf { it.isNotEmpty()
 }
 
 internal fun String.searchTerms(exclude: Boolean = false): List<String> =
-    split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { term ->
+    split(",").map { it.trim() }.filter { it.isNotEmpty() }.map { term ->
         if (exclude) "-$term" else term
     }
