@@ -14,6 +14,195 @@ import eu.kanade.tachiyomi.source.model.SChapter
 
 import eu.kanade.tachiyomi.source.model.SManga
 
+                addQueryParameter("f_sr", "on")
+                addQueryParameter("f_srdd", it)
+            }
+            minimumPages?.let { addQueryParameter("f_spf", it) }
+            maximumPages?.let { addQueryParameter("f_spt", it) }
+        }.build()
+
+        var document = client.get(firstUrl).asJsoup()
+        repeat(page - 1) {
+            val nextUrl = document.selectFirst("#dnext[href]")?.absUrl("href")?.toHttpUrl()
+                ?: return@repeat
+            document = client.get(nextUrl).asJsoup()
+        }
+        return parseMangaList(document)
+    }
+
+    private fun parseMangaList(document: Document): MangasPage {
+        val mangas = document.select("table.itg.gltc > tbody > tr, table.itg.gltc > tr").mapNotNull { row ->
+            val galleryLink = row.selectFirst(".gl3c.glname > a[href], .glname > a[href]")
+                ?: return@mapNotNull null
+            val title = galleryLink.text().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val galleryUrl = galleryLink.absUrl("href").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val cover = row.selectFirst(".glthumb img, .gl2c img")
+            val coverUrl = cover?.attr("data-src")?.takeIf { it.isNotEmpty() }
+                ?: cover?.absUrl("src")?.takeUnless { it.startsWith("data:") }
+
+            SManga.create().apply {
+                setUrlWithoutDomain(galleryUrl)
+                this.title = title
+                thumbnail_url = coverUrl
+                genre = row.select(".gt[title]")
+                    .map { it.attr("title") }
+                    .takeIf { it.isNotEmpty() }
+                    ?.joinToString()
+            }
+        }
+
+        val hasNextPage = document.selectFirst("#dnext[href]") != null
+        return MangasPage(mangas.distinctBy { it.url }, hasNextPage)
+    }
+
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        if (url.host != baseUrl.toHttpUrl().host || !url.encodedPath.startsWith("/g/")) return null
+
+        val manga = SManga.create().apply {
+            setUrlWithoutDomain(url.toString())
+        }
+        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true).manga.apply {
+            initialized = true
+        }
+    }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
+        val details = parseMangaDetails(document)
+        // Every E-Hentai gallery is one readable work. Always expose that chapter
+        // after a successful details request rather than waiting for a separate list.
+        val chapterList = if (fetchChapters) listOf(parseGalleryChapter(details, document)) else chapters
+        return SMangaUpdate(details, chapterList)
+    }
+
+    private suspend fun galleryDocument(url: HttpUrl): Document {
+        var latest: Document? = null
+        repeat(3) { attempt ->
+            val document = client.get(url).asJsoup()
+            latest = document
+            if (document.selectFirst("#gn") != null && document.selectFirst("#gdt") != null) {
+                return document
+            }
+            if (attempt < 2) delay((attempt + 1) * 500L)
+        }
+        return latest ?: error("Unable to load the E-Hentai gallery")
+    }
+
+    private fun parseMangaDetails(document: Document): SManga = SManga.create().apply {
+        setUrlWithoutDomain(document.location())
+        title = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: "E-Hentai Gallery"
+        thumbnail_url = document.selectFirst("#gd1 > div[style], #gd1 [style]")
+            ?.attr("style")
+            ?.let { coverUrlRegex.find(it)?.groupValues?.getOrNull(1) }
+
+        val tagTitles = document.select("#taglist .gt[title]").map { it.attr("title") }
+        genre = buildList {
+            document.selectFirst("#gdc")?.text()?.takeIf { it.isNotEmpty() }?.let(::add)
+            addAll(tagTitles)
+        }.takeIf { it.isNotEmpty() }?.joinToString()
+        author = tagTitles.filter { it.startsWith("artist:") || it.startsWith("group:") }
+            .map { it.substringAfter(':') }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString()
+        artist = tagTitles.filter { it.startsWith("artist:") }
+            .map { it.substringAfter(':') }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString()
+        status = SManga.COMPLETED
+        update_strategy = UpdateStrategy.ONLY_FETCH_ONCE
+
+        description = buildString {
+            document.selectFirst("#gj")?.text()?.takeIf { it.isNotEmpty() }?.let {
+                appendLine(it)
+                appendLine()
+            }
+            document.select("#gdd tr").forEach { row ->
+                val label = row.selectFirst(".gdt1")?.text()
+                val value = row.selectFirst(".gdt2")?.text()
+                if (!label.isNullOrEmpty() && !value.isNullOrEmpty()) {
+                    appendLine("$label $value")
+                }
+            }
+        }.trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun parseGalleryChapter(manga: SManga, document: Document): SChapter = SChapter.create().apply {
+        url = manga.url
+        name = document.selectFirst("#gn")?.text()?.takeIf { it.isNotEmpty() } ?: manga.title
+        chapter_number = 1F
+    }
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val chapterUrl = getChapterUrl(chapter).toHttpUrl()
+        val firstDocument = galleryDocument(chapterUrl)
+        val imagePages = firstDocument.imagePageUrls().toMutableList()
+        val lastGridPage = firstDocument.select(".gtb a[href*='?p=']")
+            .maxOfOrNull { it.absUrl("href").toHttpUrl().queryParameter("p")?.toIntOrNull() ?: 0 }
+            ?: 0
+
+        for (gridPage in 1..lastGridPage) {
+            val gridUrl = chapterUrl.newBuilder()
+                .addQueryParameter("p", gridPage.toString())
+                .build()
+            imagePages += galleryDocument(gridUrl).imagePageUrls()
+        }
+
+        return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
+    }
+
+    private fun Document.imagePageUrls(): List<String> =
+        select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf { url -> "/s/" in url } }
+
+    override suspend fun getImageUrl(page: Page): String {
+        var imageUrl = ""
+        repeat(3) { attempt ->
+            val document = client.get(page.url.toHttpUrl()).asJsoup()
+            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+            if (imageUrl.isNotEmpty()) return imageUrl
+            if (attempt < 2) delay((attempt + 1) * 500L)
+        }
+        error("E-Hentai did not return an image URL for this page")
+    }
+
+    override fun imageRequest(page: Page): Request =
+        GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
+
+    override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
+        Filter.Header("E-Hentai public search filters"),
+        CategoryModeFilter(),
+        CategoryFilter(),
+        Filter.Separator(),
+        LanguageFilter(),
+        IncludeTagsFilter(),
+        ExcludeTagsFilter(),
+        Filter.Separator(),
+        Filter.Header("Search fields and availability"),
+        SearchTitlesFilter(),
+        SearchTagsFilter(),
+        SearchDescriptionFilter(),
+        SearchTorrentNamesFilter(),
+        OnlyTorrentsFilter(),
+        ShowExpungedFilter(),
+        LowPowerTagsFilter(),
+        DownvotedTagsFilter(),
+        Filter.Separator(),
+        Filter.Header("Rating and page count"),
+        MinimumRatingFilter(),
+        MinimumPagesFilter(),
+        MaximumPagesFilter(),
+    )
+
+    private companion object {
+        val coverUrlRegex = Regex("""url\(['\"]?([^'")]+)""")
+    }
+}
+
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
 
 import eu.kanade.tachiyomi.network.GET
