@@ -57,15 +57,20 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
     override suspend fun getPopularManga(page: Int): MangasPage =
-        getGalleryList(page, "", FilterList())
+        getGalleryList(page, "", FilterList(), "/popular")
 
     override suspend fun getLatestUpdates(page: Int): MangasPage =
-        getGalleryList(page, "", FilterList())
+        getGalleryList(page, "", FilterList(), "/")
 
     override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage =
-        getGalleryList(page, query, filters)
+        getGalleryList(page, query, filters, "/")
 
-    private suspend fun getGalleryList(page: Int, query: String, filters: FilterList): MangasPage {
+    private suspend fun getGalleryList(
+        page: Int,
+        query: String,
+        filters: FilterList,
+        route: String,
+    ): MangasPage {
         val categoryFilter = filters.firstInstanceOrNull<CategoryFilter>()
         val categoryMode = filters.firstInstanceOrNull<CategoryModeFilter>()
         val categoryTags = categoryFilter?.queryTags().orEmpty()
@@ -137,6 +142,7 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         val hasTagQuery = categoryTags.isNotEmpty() || namespaceTags.isNotEmpty() ||
             includeTags.isNotEmpty() || excludeTags.isNotEmpty()
         val firstUrl = baseUrl.toHttpUrl().newBuilder().apply {
+            if (route != "/") addPathSegment(route.removePrefix("/"))
             addQueryParameter("f_cats", categoryFilter?.mask(categoryMode?.state ?: 0).toString())
             searchQuery.takeIf { it.isNotEmpty() }?.let { addQueryParameter("f_search", it) }
 
@@ -274,19 +280,21 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
             ?.attr("style")
             ?.let { coverUrlRegex.find(it)?.groupValues?.getOrNull(1) }
 
-        val tagTitles = document.select("#taglist .gt[title]").map { it.attr("title") }
+        val galleryTags = document.galleryTags()
+        val tagTitles = galleryTags.map { (namespace, value) -> "$namespace:$value" }
         if (preferences.richDetails) {
             genre = buildList {
                 document.selectFirst("#gdc")?.text()?.takeIf { it.isNotEmpty() }?.let(::add)
                 addAll(tagTitles)
             }.takeIf { it.isNotEmpty() }?.joinToString()
         }
-        author = tagTitles.filter { it.startsWith("artist:") || it.startsWith("group:") }
-            .map { it.substringAfter(':') }
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString()
-        artist = tagTitles.filter { it.startsWith("artist:") }
-            .map { it.substringAfter(':') }
+        val contributors = galleryTags.filter { it.first == "artist" || it.first == "group" }
+            .map { it.second }
+            .distinct()
+        author = contributors.takeIf { it.isNotEmpty() }?.joinToString()
+        artist = galleryTags.filter { it.first == "artist" }
+            .map { it.second }
+            .distinct()
             .takeIf { it.isNotEmpty() }
             ?.joinToString()
         status = SManga.COMPLETED
@@ -335,6 +343,21 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
 
     private fun Document.imagePageUrls(): List<String> =
         select("#gdt a[href]").mapNotNull { it.absUrl("href").takeIf { url -> "/s/" in url } }
+
+    private fun Document.galleryTags(): List<Pair<String, String>> =
+        select("#taglist a[id^=ta_]").mapNotNull { link ->
+            val tagId = link.id().removePrefix("ta_")
+            val namespace = tagId.substringBefore(':').trim()
+            val value = link.text().trim()
+            if (namespace.isNotEmpty() && value.isNotEmpty()) namespace to value else null
+        }.ifEmpty {
+            select("#taglist .gt[title]").mapNotNull { tag ->
+                val title = tag.attr("title").trim()
+                val namespace = title.substringBefore(':').trim()
+                val value = title.substringAfter(':', "").trim()
+                if (namespace.isNotEmpty() && value.isNotEmpty()) namespace to value else null
+            }
+        }
 
     override suspend fun getImageUrl(page: Page): String {
         var imageUrl = ""
