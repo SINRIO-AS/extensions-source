@@ -23,6 +23,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
 import kotlinx.coroutines.delay
@@ -60,6 +61,24 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+    override fun popularMangaRequest(page: Int): Request =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
+
+    override fun popularMangaParse(response: Response): MangasPage =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
+
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
+
+    override fun searchMangaParse(response: Response): MangasPage =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
+
+    override fun latestUpdatesRequest(page: Int): Request =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
+
+    override fun latestUpdatesParse(response: Response): MangasPage =
+        throw UnsupportedOperationException("E-Hentai uses cursor pagination")
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.fromCallable {
         runBlocking { getGalleryList(page, "", FilterList(), "/popular") }
