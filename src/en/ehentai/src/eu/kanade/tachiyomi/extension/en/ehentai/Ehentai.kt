@@ -26,8 +26,6 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import rx.Observable
 import kotlin.time.Duration.Companion.seconds
 
@@ -93,17 +91,17 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         throw UnsupportedOperationException("E-Hentai uses custom gallery parsing")
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.fromCallable {
-        runBlocking { getGalleryList(page, "", FilterList(), "/popular") }
+        getGalleryList(page, "", FilterList(), "/popular")
     }
 
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = Observable.fromCallable {
-        runBlocking { getGalleryList(page, "", FilterList(), "/") }
+        getGalleryList(page, "", FilterList(), "/")
     }
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> =
-        Observable.fromCallable { runBlocking { getGalleryList(page, query, filters, "/") } }
+        Observable.fromCallable { getGalleryList(page, query, filters, "/") }
 
-    private suspend fun getGalleryList(
+    private fun getGalleryList(
         page: Int,
         query: String,
         filters: FilterList,
@@ -275,18 +273,16 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
     }
 
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.fromCallable {
-        runBlocking { parseMangaDetails(galleryDocument(getMangaUrl(manga).toHttpUrl())) }
+        parseMangaDetails(galleryDocument(getMangaUrl(manga).toHttpUrl()))
     }
 
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = Observable.fromCallable {
-        runBlocking {
-            val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
-            val details = parseMangaDetails(document)
-            listOf(parseGalleryChapter(details, document))
-        }
+        val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
+        val details = parseMangaDetails(document)
+        listOf(parseGalleryChapter(details, document))
     }
 
-    private suspend fun galleryDocument(url: HttpUrl): Document {
+    private fun galleryDocument(url: HttpUrl): Document {
         var latest: Document? = null
         repeat(preferences.requestRetries) { attempt ->
             val document = getDocument(url)
@@ -295,7 +291,7 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
                 return document
             }
             synchronized(documentCache) { documentCache.remove(url.toString()) }
-            if (attempt < preferences.requestRetries - 1) delay((attempt + 1) * 500L)
+            if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
         }
         return latest ?: error("Unable to load the E-Hentai gallery")
     }
@@ -349,10 +345,10 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
     }
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
-        runBlocking { loadPageList(chapter) }
+        loadPageList(chapter)
     }
 
-    private suspend fun loadPageList(chapter: SChapter): List<Page> {
+    private fun loadPageList(chapter: SChapter): List<Page> {
         val chapterUrl = getChapterUrl(chapter).toHttpUrl()
         val firstDocument = galleryDocument(chapterUrl)
         val imagePages = firstDocument.imagePageUrls().toMutableList()
@@ -391,24 +387,23 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         }
 
     override fun fetchImageUrl(page: Page): Observable<String> = Observable.fromCallable {
-        runBlocking {
-            var imageUrl = ""
-            repeat(preferences.requestRetries) { attempt ->
-                val document = getDocument(page.url.toHttpUrl())
-                imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
-                    ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
-                if (imageUrl.isNotEmpty()) return@runBlocking imageUrl
-                synchronized(documentCache) { documentCache.remove(page.url) }
-                if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
-            }
-            error("E-Hentai did not return an image URL for this page")
+        var imageUrl = ""
+        for (attempt in 0 until preferences.requestRetries) {
+            val document = getDocument(page.url.toHttpUrl())
+            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+            if (imageUrl.isNotEmpty()) break
+            synchronized(documentCache) { documentCache.remove(page.url) }
+            if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
         }
+        imageUrl.takeIf { it.isNotEmpty() }
+            ?: error("E-Hentai did not return an image URL for this page")
     }
 
     override fun imageRequest(page: Page): Request =
         GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
 
-    private suspend fun getDocument(url: HttpUrl): Document {
+    private fun getDocument(url: HttpUrl): Document {
         synchronized(documentCache) {
             documentCache[url.toString()]?.let { return it }
         }
