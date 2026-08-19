@@ -1,14 +1,17 @@
 import io.github.keiyoushi.gradle.api.ContentWarning
 
+
 plugins {
     alias(kei.plugins.extension)
 }
 
+
 keiyoushi {
     name = "E-Hentai"
-    versionCode = 10
+    versionCode = 11
     contentWarning = ContentWarning.NSFW
     libVersion = "1.4"
+
 
     source {
         name = "E-Hentai"
@@ -16,7 +19,9 @@ keiyoushi {
         lang = "en"
     }
 
+
     deeplink {
         path("/..*")
     }
 }
+
