@@ -407,7 +407,8 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         synchronized(documentCache) {
             documentCache[url.toString()]?.let { return it }
         }
-        val document = client.get(url).asJsoup()
+        val request = GET(url, headersBuilder().build())
+        val document = client.newCall(request).execute().use { it.asJsoup() }
         synchronized(documentCache) { documentCache[url.toString()] = document }
         return document
     }
