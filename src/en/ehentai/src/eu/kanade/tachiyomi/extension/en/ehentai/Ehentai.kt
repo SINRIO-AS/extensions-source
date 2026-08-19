@@ -11,11 +11,11 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.source.ConfigurableSource
+import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.network.rateLimit
-import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Headers
@@ -31,7 +31,7 @@ import rx.Observable
 import kotlin.time.Duration.Companion.seconds
 
 @Source
-abstract class Ehentai : KeiSource(), ConfigurableSource {
+abstract class Ehentai : HttpSource(), ConfigurableSource {
 
     private val preferences: SharedPreferences by getPreferencesLazy()
     private val documentCache = object : LinkedHashMap<String, Document>(DOCUMENT_CACHE_SIZE, 0.75f, true) {
@@ -45,26 +45,32 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) = setupEhentaiPreferenceScreen(screen)
 
-    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder {
+    override val supportsLatest get() = true
+
+    override val client: OkHttpClient by lazy {
         val (burst, interval) = when (preferences.requestRateProfile) {
             "polite" -> 2 to 2.seconds
             "fast" -> 6 to 1.seconds
             else -> 4 to 1.seconds
         }
-        return rateLimit(burst, interval) { it.host == baseUrl.toHttpUrl().host }
+        network.client.newBuilder()
+            .rateLimit(burst, interval) { it.host == baseUrl.toHttpUrl().host }
+            .build()
     }
 
-    override fun Headers.Builder.configureHeaders() =
-        add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    override fun headersBuilder() = super.headersBuilder()
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-    override suspend fun getPopularManga(page: Int): MangasPage =
-        getGalleryList(page, "", FilterList(), "/popular")
+    override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.fromCallable {
+        runBlocking { getGalleryList(page, "", FilterList(), "/popular") }
+    }
 
-    override suspend fun getLatestUpdates(page: Int): MangasPage =
-        getGalleryList(page, "", FilterList(), "/")
+    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = Observable.fromCallable {
+        runBlocking { getGalleryList(page, "", FilterList(), "/") }
+    }
 
-    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage =
-        getGalleryList(page, query, filters, "/")
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> =
+        Observable.fromCallable { runBlocking { getGalleryList(page, query, filters, "/") } }
 
     private suspend fun getGalleryList(
         page: Int,
@@ -237,15 +243,6 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         return MangasPage(uniquePageResults, hasNextPage)
     }
 
-    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
-        if (url.host != baseUrl.toHttpUrl().host || !url.encodedPath.startsWith("/g/")) return null
-
-        val manga = SManga.create().apply {
-            setUrlWithoutDomain(url.toString())
-        }
-        return parseMangaDetails(galleryDocument(url))
-    }
-
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.fromCallable {
         runBlocking { parseMangaDetails(galleryDocument(getMangaUrl(manga).toHttpUrl())) }
     }
@@ -320,7 +317,11 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         chapter_number = 1F
     }
 
-    override suspend fun getPageList(chapter: SChapter): List<Page> {
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
+        runBlocking { loadPageList(chapter) }
+    }
+
+    private suspend fun loadPageList(chapter: SChapter): List<Page> {
         val chapterUrl = getChapterUrl(chapter).toHttpUrl()
         val firstDocument = galleryDocument(chapterUrl)
         val imagePages = firstDocument.imagePageUrls().toMutableList()
@@ -385,7 +386,7 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         return document
     }
 
-    override fun getFilterList(data: kotlinx.serialization.json.JsonElement?): FilterList = FilterList(
+    override fun getFilterList(): FilterList = FilterList(
         Filter.Header("E-Hentai public search filters"),
         CategoryModeFilter(),
         CategoryFilter(),
