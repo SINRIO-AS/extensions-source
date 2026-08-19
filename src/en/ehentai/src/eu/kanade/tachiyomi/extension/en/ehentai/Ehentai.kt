@@ -9,7 +9,6 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.util.asJsoup
@@ -27,6 +26,8 @@ import okhttp3.Request
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import rx.Observable
 import kotlin.time.Duration.Companion.seconds
 
 @Source
@@ -242,21 +243,19 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         val manga = SManga.create().apply {
             setUrlWithoutDomain(url.toString())
         }
-        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true).manga.apply {
-            initialized = true
-        }
+        return parseMangaDetails(galleryDocument(url))
     }
 
-    override suspend fun fetchMangaUpdate(
-        manga: SManga,
-        chapters: List<SChapter>,
-        fetchDetails: Boolean,
-        fetchChapters: Boolean,
-    ): SMangaUpdate {
-        val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
-        val details = parseMangaDetails(document)
-        val chapterList = if (fetchChapters) listOf(parseGalleryChapter(details, document)) else chapters
-        return SMangaUpdate(details, chapterList)
+    override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.fromCallable {
+        runBlocking { parseMangaDetails(galleryDocument(getMangaUrl(manga).toHttpUrl())) }
+    }
+
+    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = Observable.fromCallable {
+        runBlocking {
+            val document = galleryDocument(getMangaUrl(manga).toHttpUrl())
+            val details = parseMangaDetails(document)
+            listOf(parseGalleryChapter(details, document))
+        }
     }
 
     private suspend fun galleryDocument(url: HttpUrl): Document {
@@ -359,17 +358,19 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
             }
         }
 
-    override suspend fun getImageUrl(page: Page): String {
-        var imageUrl = ""
-        repeat(preferences.requestRetries) { attempt ->
-            val document = getDocument(page.url.toHttpUrl())
-            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
-                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
-            if (imageUrl.isNotEmpty()) return imageUrl
-            synchronized(documentCache) { documentCache.remove(page.url) }
-            if (attempt < preferences.requestRetries - 1) delay((attempt + 1) * 500L)
+    override fun fetchImageUrl(page: Page): Observable<String> = Observable.fromCallable {
+        runBlocking {
+            var imageUrl = ""
+            repeat(preferences.requestRetries) { attempt ->
+                val document = getDocument(page.url.toHttpUrl())
+                imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+                    ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+                if (imageUrl.isNotEmpty()) return@runBlocking imageUrl
+                synchronized(documentCache) { documentCache.remove(page.url) }
+                if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
+            }
+            error("E-Hentai did not return an image URL for this page")
         }
-        error("E-Hentai did not return an image URL for this page")
     }
 
     override fun imageRequest(page: Page): Request =
