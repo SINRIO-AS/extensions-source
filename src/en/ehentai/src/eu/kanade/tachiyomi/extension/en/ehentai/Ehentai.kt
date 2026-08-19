@@ -80,6 +80,18 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
     override fun latestUpdatesParse(response: Response): MangasPage =
         throw UnsupportedOperationException("E-Hentai uses cursor pagination")
 
+    override fun mangaDetailsParse(response: Response): SManga =
+        throw UnsupportedOperationException("E-Hentai uses custom gallery parsing")
+
+    override fun chapterListParse(response: Response): List<SChapter> =
+        throw UnsupportedOperationException("E-Hentai uses custom gallery parsing")
+
+    override fun pageListParse(response: Response): List<Page> =
+        throw UnsupportedOperationException("E-Hentai uses custom gallery parsing")
+
+    override fun imageUrlParse(response: Response): String =
+        throw UnsupportedOperationException("E-Hentai uses custom gallery parsing")
+
     override fun fetchPopularManga(page: Int): Observable<MangasPage> = Observable.fromCallable {
         runBlocking { getGalleryList(page, "", FilterList(), "/popular") }
     }
