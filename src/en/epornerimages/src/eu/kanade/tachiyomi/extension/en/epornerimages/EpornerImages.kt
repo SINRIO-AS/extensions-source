@@ -18,7 +18,7 @@ import rx.Observable
 
 @Source
 abstract class EpornerImages : HttpSource() {
-    override val name = "Eporner Images"
+    override val name = "Eporner Pics"
     override val baseUrl = "https://www.eporner.com"
     override val supportsLatest = true
 
@@ -27,9 +27,9 @@ abstract class EpornerImages : HttpSource() {
         .add("Referer", "$baseUrl/")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-    override fun popularMangaRequest(page: Int): Request = searchRequest(page, "", FilterList(SortFilter(3)))
+    override fun popularMangaRequest(page: Int): Request = picsRequest(page, "most-viewed")
     override fun popularMangaParse(response: Response): MangasPage = parseSearch(response.asJsoup())
-    override fun latestUpdatesRequest(page: Int): Request = searchRequest(page, "", FilterList(SortFilter(0)))
+    override fun latestUpdatesRequest(page: Int): Request = picsRequest(page, "latest")
     override fun latestUpdatesParse(response: Response): MangasPage = parseSearch(response.asJsoup())
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = searchRequest(page, query, filters)
     override fun searchMangaParse(response: Response): MangasPage = parseSearch(response.asJsoup())
@@ -41,30 +41,41 @@ abstract class EpornerImages : HttpSource() {
     override fun chapterListParse(response: Response): List<SChapter> = listOf(
         SChapter.create().apply {
             setUrlWithoutDomain(response.request.url.toString())
-            name = "Gallery"
+            name = "Pics"
             chapter_number = 1f
         },
     )
 
     override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
     override fun pageListParse(response: Response): List<Page> {
-        val imageUrl = response.asJsoup().photoImageUrl()
-        return listOf(Page(0, imageUrl = imageUrl))
-    }
-
-    override fun imageUrlParse(response: Response): String {
         val document = response.asJsoup()
-        return listOf(
-            document.selectFirst("meta[property='og:image']")?.attr("content"),
-            document.selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.imageUrl(),
-        ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
-            ?: error("Eporner did not return an original image URL")
+        val photoPages = document.select("a[href*='/photo/']")
+            .mapNotNull { link ->
+                val image = link.selectFirst("img")
+                    ?: link.parent()?.selectFirst("img")
+                    ?: link.parent()?.parent()?.selectFirst("img")
+                val imageUrl = image?.imageUrl()
+                link.absUrl("href")
+                    .takeIf(String::isNotBlank)
+                    ?.takeIf { !it.contains("/gifs/", true) && !it.contains("/porn-gifs/", true) }
+                    ?.takeIf { !link.text().contains("gif", true) }
+                    ?.takeIf { imageUrl == null || imageUrl.isStaticImageUrl() }
+            }
+            .distinct()
+        if (photoPages.isNotEmpty()) return photoPages.mapIndexed { index, url -> Page(index, url = url) }
+        return listOf(Page(0, imageUrl = document.photoImageUrl()))
     }
 
-    override fun imageRequest(page: Page): Request = GET(
-        page.imageUrl!!.toHttpUrl(),
-        headersBuilder().set("Referer", page.url).build(),
-    )
+    override fun imageUrlParse(response: Response): String = response.asJsoup().photoImageUrl()
+
+    override fun imageRequest(page: Page): Request {
+        val pageUrl = page.url
+        return if (pageUrl.isNullOrBlank()) {
+            GET(page.imageUrl!!.toHttpUrl(), headers)
+        } else {
+            GET(pageUrl.toHttpUrl(), headersBuilder().set("Referer", pageUrl).build())
+        }
+    }
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> = super.fetchPopularManga(page)
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = super.fetchLatestUpdates(page)
@@ -77,48 +88,58 @@ abstract class EpornerImages : HttpSource() {
     override fun getChapterUrl(chapter: SChapter): String = "$baseUrl${chapter.url}"
 
     override fun getFilterList() = FilterList(
-        Filter.Header("All Eporner photo search controls"),
+        Filter.Header("Eporner Pics sections"),
+        SectionFilter(),
         SortFilter(),
-        QualityFilter(),
-        ProductionFilter(),
-        MinimumDurationFilter(),
-        MaximumDurationFilter(),
-        CategoryFilter(),
         Filter.Separator(),
-        Filter.Header("Categories: select Include, Any, or Exclude. Site limits apply."),
+        Filter.Header("Static images only: GIFs are excluded"),
     )
 
+    private fun picsRequest(page: Int, sort: String): Request {
+        val builder = baseUrl.toHttpUrl().newBuilder().addPathSegment("pics")
+        if (sort != "latest") builder.addQueryParameter("sort", sort)
+        if (page > 1) builder.addPathSegment(page.toString())
+        return GET(builder.build(), headers)
+    }
+
     private fun searchRequest(page: Int, query: String, filters: FilterList): Request {
+        val section = filters.sectionValue()
+        val sort = when (section) {
+            POPULAR -> "most-viewed"
+            TOP_RATED -> "top-rated"
+            else -> filters.sortValue()
+        }
         val builder = baseUrl.toHttpUrl().newBuilder()
-            .addPathSegment("search-photos")
-        if (query.isNotBlank()) builder.addPathSegment(query.toSearchSlug())
-        builder.addQueryParameter("sort", filters.sortValue())
-        filters.qualityValue()?.let { builder.addQueryParameter("quality", it) }
-        filters.productionValue()?.let { builder.addQueryParameter("production", it) }
-        filters.minimumDuration()?.let { builder.addQueryParameter("min_duration", it) }
-        filters.maximumDuration()?.let { builder.addQueryParameter("max_duration", it) }
-        val categories = filters.categoryValues()
-        if (categories.first.isNotEmpty()) builder.addQueryParameter("categories", categories.first.joinToString(","))
-        if (categories.second.isNotEmpty()) builder.addQueryParameter("exclude_categories", categories.second.joinToString(","))
+        when {
+            query.isNotBlank() -> {
+                builder.addPathSegment("search-photos")
+                builder.addPathSegment(query.toSearchSlug())
+            }
+            section == COLLECTIONS -> builder.addPathSegment("best-collections")
+            else -> builder.addPathSegment("pics")
+        }
+        if (sort != "latest") builder.addQueryParameter("sort", sort)
         if (page > 1) builder.addPathSegment(page.toString())
         return GET(builder.build(), headers)
     }
 
     private fun parseSearch(document: Document): MangasPage {
-        val mangas = document.select("a[href*='/photo/']")
+        val mangas = document.select("a[href*='/photo/'], a[href*='/gallery/']")
             .mapNotNull { link ->
+                val href = link.absUrl("href").ifBlank { link.attr("href").toAbsoluteUrl() }
+                if (href.contains("/gifs/", true) || href.contains("/porn-gifs/", true)) return@mapNotNull null
                 val image = link.selectFirst("img")
                     ?: link.parent()?.selectFirst("img")
                     ?: link.parent()?.parent()?.selectFirst("img")
-                val href = link.absUrl("href").ifBlank { link.attr("href").toAbsoluteUrl() }
+                val thumbnail = image?.imageUrl()?.takeIf { it.isStaticImageUrl() }
                 val title = image?.attr("alt")?.trim().orEmpty()
                     .ifBlank { link.attr("title").trim() }
                     .ifBlank { link.text().trim().removePrefix("amateur photo").trim() }
-                if (href.isBlank() || title.isBlank()) return@mapNotNull null
+                if (title.contains("gif", true) || href.isBlank() || title.isBlank() || thumbnail.isNullOrBlank()) return@mapNotNull null
                 SManga.create().apply {
                     setUrlWithoutDomain(href)
                     this.title = title
-                    thumbnail_url = image?.imageUrl()?.takeIf(String::isNotBlank)
+                    thumbnail_url = thumbnail
                     initialized = true
                 }
             }
@@ -131,7 +152,8 @@ abstract class EpornerImages : HttpSource() {
     private fun parseDetails(document: Document): SManga = SManga.create().apply {
         title = document.selectFirst("meta[property='og:title']")?.attr("content")?.trim().orEmpty()
             .ifBlank { document.selectFirst("h1, .title")?.text()?.trim().orEmpty() }
-        thumbnail_url = document.selectFirst("meta[property='og:image']")?.attr("content")?.toAbsoluteUrl()
+        thumbnail_url = document.selectFirst("meta[property='og:image']")?.attr("content")
+            ?.toAbsoluteUrl()?.takeIf { it.isStaticImageUrl() }
         genre = document.select("a[href*='/tag/'], a[href*='/category/']").eachText().distinct().joinToString(", ").ifBlank { null }
         description = document.selectFirst("meta[name='description']")?.attr("content")?.trim()
             ?: document.selectFirst(".description, .gallery-description")?.text()?.trim()
@@ -139,40 +161,29 @@ abstract class EpornerImages : HttpSource() {
         initialized = true
     }
 
+    private fun FilterList.sectionValue(): Int = filterIsInstance<SectionFilter>().firstOrNull()?.state ?: 0
     private fun FilterList.sortValue(): String = SORT_VALUES.getOrElse(filterIsInstance<SortFilter>().firstOrNull()?.state ?: 0) { "latest" }
-    private fun FilterList.qualityValue(): String? = QUALITY_VALUES.getOrNull(filterIsInstance<QualityFilter>().firstOrNull()?.state ?: 0)?.takeIf(String::isNotBlank)
-    private fun FilterList.productionValue(): String? = PRODUCTION_VALUES.getOrNull(filterIsInstance<ProductionFilter>().firstOrNull()?.state ?: 0)?.takeIf(String::isNotBlank)
-    private fun FilterList.minimumDuration(): String? = filterIsInstance<MinimumDurationFilter>().firstOrNull()?.state?.trim()?.takeIf(String::isNotBlank)
-    private fun FilterList.maximumDuration(): String? = filterIsInstance<MaximumDurationFilter>().firstOrNull()?.state?.trim()?.takeIf(String::isNotBlank)
 
-    private fun FilterList.categoryValues(): Pair<List<String>, List<String>> {
-        val selected = filterIsInstance<CategoryFilter>().firstOrNull()?.state.orEmpty()
-        val included = selected.filter { it.state == Filter.TriState.STATE_INCLUDE }.map { it.name.toToken() }.take(5)
-        val excluded = selected.filter { it.state == Filter.TriState.STATE_EXCLUDE }.map { it.name.toToken() }.take(10)
-        return included to excluded
-    }
+    private class SectionFilter : Filter.Select<String>("Pics section", SECTION_LABELS)
+    private class SortFilter : Filter.Select<String>("Sort by", SORT_LABELS)
 
-    private class SortFilter(default: Int = 0) : Filter.Select<String>("Sort by", SORT_LABELS, default)
-    private class QualityFilter : Filter.Select<String>("Quality", QUALITY_LABELS)
-    private class ProductionFilter : Filter.Select<String>("Production", PRODUCTION_LABELS)
-    private class MinimumDurationFilter : Filter.Text("Minimum duration (minutes)")
-    private class MaximumDurationFilter : Filter.Text("Maximum duration (minutes)")
-    private class CategoryTriState(name: String) : Filter.TriState(name)
-    private class CategoryFilter : Filter.Group<Filter.TriState>("Categories", CATEGORY_LABELS.map { CategoryTriState(it) })
-
-    private fun org.jsoup.nodes.Element.imageUrl(): String = attr("data-original").ifBlank { attr("data-src") }.ifBlank { attr("src") }.toAbsoluteUrl()
     private fun Document.photoImageUrl(): String = listOf(
         selectFirst("meta[property='og:image']")?.attr("content"),
         selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.imageUrl(),
-    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
-        ?: error("Eporner photo page did not expose a public image URL")
+    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isStaticImageUrl() }
+        ?: error("Eporner did not return a static original image URL")
+
+    private fun org.jsoup.nodes.Element.imageUrl(): String = attr("data-original")
+        .ifBlank { attr("data-src") }
+        .ifBlank { attr("src") }
+        .toAbsoluteUrl()
 
     private fun String.toSearchSlug(): String = trim()
         .replace(Regex("\\s+"), "-")
         .replace(Regex("[^\\p{L}\\p{N}-]+"), "-")
         .replace(Regex("-{2,}"), "-")
         .trim('-')
-    private fun String.toToken(): String = lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+
     private fun String.toAbsoluteUrl(): String = when {
         isBlank() -> this
         startsWith("http://") || startsWith("https://") -> this
@@ -180,18 +191,17 @@ abstract class EpornerImages : HttpSource() {
         startsWith("/") -> baseUrl + this
         else -> "$baseUrl/$this"
     }
-    private fun String.isImageUrl() = startsWith("http") && Regex("(?i)\\.(?:jpe?g|png|gif|webp)(?:[?#].*)?$").containsMatchIn(this)
+
+    private fun String.isStaticImageUrl() = startsWith("http") &&
+        Regex("(?i)\\.(?:jpe?g|png|webp)(?:[?#].*)?$").containsMatchIn(this)
 
     private companion object {
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
-        val SORT_LABELS = arrayOf("Most recent", "Weekly Top", "Monthly Top", "Most viewed", "Top rated", "Longest", "Shortest")
-        val SORT_VALUES = arrayOf("latest", "top-weekly", "top-monthly", "most-viewed", "top-rated", "longest", "shortest")
-        val QUALITY_LABELS = arrayOf("All", "720p+", "1080p+", "4K")
-        val QUALITY_VALUES = arrayOf("", "720p", "1080p", "4k")
-        val PRODUCTION_LABELS = arrayOf("All", "Professional", "Homemade")
-        val PRODUCTION_VALUES = arrayOf("", "professional", "homemade")
-        val CATEGORY_LABELS = arrayOf(
-            "4K Ultra HD", "60 FPS", "AI", "Amateur", "Anal", "Asian", "ASMR", "BBW", "BDSM", "Big Ass", "Big Dick", "Big Tits", "Bisexual", "Blonde", "Blowjob", "Bondage", "Brunette", "Bukkake", "Casting", "Compilation", "Cosplay", "Creampie", "Cuckold", "Cumshot", "Double Penetration", "Ebony", "Fat", "Fetish", "Fisting", "Footjob", "For Women", "Gay", "Gloryhole", "Group Sex", "Handjob", "Hardcore", "HD Porn 1080p", "HD Sex", "Hentai", "Homemade", "Hotel", "Hotwife", "Housewives", "HQ Porn", "Indian", "Indonesia", "Interracial", "Japanese", "Latina", "Lesbian", "Lingerie", "Massage", "Masturbation", "Mature", "MILF", "Nurses", "Office", "Older Men", "Orgy", "Outdoor", "PAWG", "Petite", "Pinay", "Pornstar", "POV", "Pregnant", "Public", "Redhead", "Shemale", "Sleep", "Small Tits", "Squirt", "Stepmom", "Stepsister", "Striptease", "Students", "Swinger", "Teen", "Threesome", "Toys", "Uncategorized", "Uniform", "Vintage", "VR Porn", "Webcam",
-        )
+        const val POPULAR = 1
+        const val TOP_RATED = 2
+        const val COLLECTIONS = 3
+        val SECTION_LABELS = arrayOf("All Pics", "Popular", "Top Rated", "Best Collections")
+        val SORT_LABELS = arrayOf("Most recent", "Most viewed", "Top rated")
+        val SORT_VALUES = arrayOf("latest", "most-viewed", "top-rated")
     }
 }
