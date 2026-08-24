@@ -53,7 +53,7 @@ abstract class EpornerImages : HttpSource() {
             .mapNotNull { it.absUrl("href").takeIf(String::isNotBlank) }
         if (links.isNotEmpty()) return links.distinct().mapIndexed { index, url -> Page(index, url = url) }
         return document.select("img[data-original], img[data-src], img[src]")
-            .mapNotNull { it.imageUrl().takeIf(String::isImageUrl) }
+            .mapNotNull { it.imageUrl().takeIf { it.isImageUrl() } }
             .distinct()
             .mapIndexed { index, url -> Page(index, imageUrl = url) }
     }
@@ -63,7 +63,7 @@ abstract class EpornerImages : HttpSource() {
         return listOf(
             document.selectFirst("meta[property='og:image']")?.attr("content"),
             document.selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.imageUrl(),
-        ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull(String::isImageUrl)
+        ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
             ?: error("Eporner did not return an original image URL")
     }
 
