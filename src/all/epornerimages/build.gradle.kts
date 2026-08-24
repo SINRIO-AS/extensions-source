@@ -6,7 +6,7 @@ plugins {
 
 keiyoushi {
     name = "Eporner Images"
-    versionCode = 1
+    versionCode = 2
     contentWarning = ContentWarning.NSFW
     libVersion = "1.6"
     source {
@@ -15,7 +15,7 @@ keiyoushi {
     }
     deeplink {
         host("www.eporner.com")
-        path("/gallery-..*")
-        path("/photo-..*")
+        path("/gallery/.*")
+        path("/photo/.*")
     }
 }
