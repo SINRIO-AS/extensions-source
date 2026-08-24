@@ -48,14 +48,8 @@ abstract class EpornerImages : HttpSource() {
 
     override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
     override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
-        val links = document.select("a[href*='/photo-'], a[href*='/gallery-']")
-            .mapNotNull { it.absUrl("href").takeIf(String::isNotBlank) }
-        if (links.isNotEmpty()) return links.distinct().mapIndexed { index, url -> Page(index, url = url) }
-        return document.select("img[data-original], img[data-src], img[src]")
-            .mapNotNull { it.imageUrl().takeIf { it.isImageUrl() } }
-            .distinct()
-            .mapIndexed { index, url -> Page(index, imageUrl = url) }
+        val imageUrl = response.asJsoup().photoImageUrl()
+        return listOf(Page(0, imageUrl = imageUrl))
     }
 
     override fun imageUrlParse(response: Response): String {
@@ -95,8 +89,9 @@ abstract class EpornerImages : HttpSource() {
     )
 
     private fun searchRequest(page: Int, query: String, filters: FilterList): Request {
-        val builder = "$baseUrl/search-photos/".toHttpUrl().newBuilder()
-        if (query.isNotBlank()) builder.addQueryParameter("q", query.trim())
+        val builder = baseUrl.toHttpUrl().newBuilder()
+            .addPathSegment("search-photos")
+        if (query.isNotBlank()) builder.addPathSegment(query.toSearchSlug())
         builder.addQueryParameter("sort", filters.sortValue())
         filters.qualityValue()?.let { builder.addQueryParameter("quality", it) }
         filters.productionValue()?.let { builder.addQueryParameter("production", it) }
@@ -105,21 +100,25 @@ abstract class EpornerImages : HttpSource() {
         val categories = filters.categoryValues()
         if (categories.first.isNotEmpty()) builder.addQueryParameter("categories", categories.first.joinToString(","))
         if (categories.second.isNotEmpty()) builder.addQueryParameter("exclude_categories", categories.second.joinToString(","))
-        if (page > 1) builder.addQueryParameter("page", page.toString())
+        if (page > 1) builder.addPathSegment(page.toString())
         return GET(builder.build(), headers)
     }
 
     private fun parseSearch(document: Document): MangasPage {
-        val mangas = document.select("div.item a[href], li.thumb a[href], .photo-item a[href], .gallery-item a[href], a[href*='/photo-'], a[href*='/gallery-']")
+        val mangas = document.select("a[href*='/photo/']")
             .mapNotNull { link ->
-                val image = link.selectFirst("img") ?: link.parent()?.selectFirst("img") ?: return@mapNotNull null
+                val image = link.selectFirst("img")
+                    ?: link.parent()?.selectFirst("img")
+                    ?: link.parent()?.parent()?.selectFirst("img")
                 val href = link.absUrl("href").ifBlank { link.attr("href").toAbsoluteUrl() }
-                val title = image.attr("alt").trim().ifBlank { link.attr("title").trim() }.ifBlank { link.text().trim() }
+                val title = image?.attr("alt")?.trim().orEmpty()
+                    .ifBlank { link.attr("title").trim() }
+                    .ifBlank { link.text().trim().removePrefix("amateur photo").trim() }
                 if (href.isBlank() || title.isBlank()) return@mapNotNull null
                 SManga.create().apply {
                     setUrlWithoutDomain(href)
                     this.title = title
-                    thumbnail_url = image.imageUrl()
+                    thumbnail_url = image?.imageUrl()?.takeIf(String::isNotBlank)
                     initialized = true
                 }
             }
@@ -162,6 +161,17 @@ abstract class EpornerImages : HttpSource() {
     private class CategoryFilter : Filter.Group<Filter.TriState>("Categories", CATEGORY_LABELS.map { CategoryTriState(it) })
 
     private fun org.jsoup.nodes.Element.imageUrl(): String = attr("data-original").ifBlank { attr("data-src") }.ifBlank { attr("src") }.toAbsoluteUrl()
+    private fun Document.photoImageUrl(): String = listOf(
+        selectFirst("meta[property='og:image']")?.attr("content"),
+        selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.imageUrl(),
+    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
+        ?: error("Eporner photo page did not expose a public image URL")
+
+    private fun String.toSearchSlug(): String = trim()
+        .replace(Regex("\\s+"), "-")
+        .replace(Regex("[^\\p{L}\\p{N}-]+"), "-")
+        .replace(Regex("-{2,}"), "-")
+        .trim('-')
     private fun String.toToken(): String = lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
     private fun String.toAbsoluteUrl(): String = when {
         isBlank() -> this
