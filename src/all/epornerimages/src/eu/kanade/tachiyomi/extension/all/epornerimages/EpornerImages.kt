@@ -62,9 +62,20 @@ abstract class EpornerImages : KeiSource() {
 
     private fun buildSearchUrl(page: Int, query: String, filters: FilterList): HttpUrl {
         val builder = baseUrl.toHttpUrl().newBuilder()
-            .addPathSegment("search-photos")
-        if (query.isNotBlank()) builder.addPathSegment(query.toSearchSlug())
-        builder.addQueryParameter("sort", filters.sortValue())
+        if (query.isNotBlank()) {
+            builder.addPathSegment("search-photos")
+            builder.addPathSegment(query.toSearchSlug())
+        } else if (filters.sectionValue() == COLLECTIONS) {
+            builder.addPathSegment("best-collections")
+        } else {
+            builder.addPathSegment("pics")
+        }
+        val sort = when (filters.sectionValue()) {
+            POPULAR -> "most-viewed"
+            TOP_RATED -> "top-rated"
+            else -> filters.sortValue()
+        }
+        if (sort != "latest") builder.addQueryParameter("sort", sort)
         filters.minimumDuration()?.let { builder.addQueryParameter("min_duration", it) }
         filters.maximumDuration()?.let { builder.addQueryParameter("max_duration", it) }
         filters.qualityValue()?.let { builder.addQueryParameter("quality", it) }
@@ -77,20 +88,24 @@ abstract class EpornerImages : KeiSource() {
     }
 
     private fun parseSearch(document: Document): MangasPage {
-        val mangas = document.select("a[href*='/photo/']")
+        val mangas = document.select("a[href*='/photo/'], a[href*='/gallery/']")
             .mapNotNull { link ->
                 val href = link.absUrl("href").ifBlank { link.attr("href").toAbsoluteUrl() }
+                if (href.contains("/gifs/", true) || href.contains("/porn-gifs/", true)) return@mapNotNull null
                 val image = link.selectFirst("img")
                     ?: link.parent()?.selectFirst("img")
                     ?: link.parent()?.parent()?.selectFirst("img")
+                val thumbnail = image?.let { imageElement ->
+                    imageElement.attr("data-original").ifBlank { imageElement.attr("data-src") }.ifBlank { imageElement.attr("src") }.toAbsoluteUrl()
+                }
                 val title = image?.attr("alt")?.trim().orEmpty()
                     .ifBlank { link.attr("title").trim() }
                     .ifBlank { link.text().trim().removePrefix("amateur photo").trim() }
-                if (href.isBlank() || title.isBlank()) return@mapNotNull null
+                if (title.contains("gif", true) || href.isBlank() || title.isBlank() || thumbnail.isNullOrBlank() || !thumbnail.isStaticImageUrl()) return@mapNotNull null
                 SManga.create().apply {
                     setUrlWithoutDomain(href)
                     this.title = title
-                    thumbnail_url = image?.attr("data-original")?.ifBlank { image.attr("data-src") }?.ifBlank { image.attr("src") }?.toAbsoluteUrl()
+                    thumbnail_url = thumbnail
                     initialized = true
                 }
             }
@@ -133,7 +148,8 @@ abstract class EpornerImages : KeiSource() {
     private class CategoryFilter : Filter.Group<Filter.TriState>("Categories", CATEGORY_LABELS.map { CategoryTriState(it) })
 
     override fun getFilterList(data: JsonElement?) = FilterList(
-        Filter.Header("All Eporner photo search controls"),
+        Filter.Header("Eporner Pics sections"),
+        SectionFilter(),
         SortFilter(),
         QualityFilter(),
         ProductionFilter(),
@@ -149,8 +165,8 @@ abstract class EpornerImages : KeiSource() {
         selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.let { image ->
             image.attr("data-original").ifBlank { image.attr("data-src") }.ifBlank { image.attr("src") }
         },
-    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
-        ?: error("Eporner photo page did not expose a public image URL")
+        ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isStaticImageUrl() }
+        ?: error("Eporner did not return a static original image URL")
 
     private fun String.toSearchSlug() = trim()
         .replace(Regex("\\s+"), "-")
@@ -166,11 +182,18 @@ abstract class EpornerImages : KeiSource() {
         startsWith("/") -> baseUrl + this
         else -> "$baseUrl/$this"
     }
-    private fun String.isImageUrl() = startsWith("http") && Regex("(?i)\\.(?:jpe?g|png|gif|webp)(?:[?#].*)?$").containsMatchIn(this)
+    private fun String.isStaticImageUrl() = startsWith("http") && Regex("(?i)\\.(?:jpe?g|png|webp)(?:[?#].*)?$").containsMatchIn(this)
+
+    private fun FilterList.sectionValue(): Int = filterIsInstance<SectionFilter>().firstOrNull()?.state ?: 0
+    private class SectionFilter : Filter.Select<String>("Pics section", SECTION_LABELS)
 
     private companion object {
-        val SORT_LABELS = arrayOf("Most recent", "Weekly Top", "Monthly Top", "Most viewed", "Top rated", "Longest", "Shortest")
-        val SORT_VALUES = arrayOf("latest", "top-weekly", "top-monthly", "most-viewed", "top-rated", "longest", "shortest")
+        const val POPULAR = 1
+        const val TOP_RATED = 2
+        const val COLLECTIONS = 3
+        val SECTION_LABELS = arrayOf("All Pics", "Popular", "Top Rated", "Best Collections")
+        val SORT_LABELS = arrayOf("Most recent", "Most viewed", "Top rated")
+        val SORT_VALUES = arrayOf("latest", "most-viewed", "top-rated")
         val QUALITY_LABELS = arrayOf("All", "720p+", "1080p+", "4K")
         val QUALITY_VALUES = arrayOf("", "720p", "1080p", "4k")
         val PRODUCTION_LABELS = arrayOf("All", "Professional", "Homemade")
