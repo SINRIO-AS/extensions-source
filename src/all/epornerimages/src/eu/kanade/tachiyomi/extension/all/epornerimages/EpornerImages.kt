@@ -56,24 +56,14 @@ abstract class EpornerImages : KeiSource() {
     }
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        val pages = mutableListOf<Page>()
-        var document = client.get(baseUrl + chapter.url).asJsoup()
-        while (true) {
-            document.select("img[data-original], img[data-src], img[src]")
-                .mapNotNull { it.attr("data-original").ifBlank { it.attr("data-src") }.ifBlank { it.attr("src") }.toAbsoluteUrl() }
-                .filter { it.isImageUrl() }
-                .distinct()
-                .forEach { pages.add(Page(pages.size, imageUrl = it)) }
-            val next = document.selectFirst("a[rel='next'], a.next")?.absUrl("href")
-            if (next.isNullOrBlank() || next == document.baseUri()) break
-            document = client.get(next.toHttpUrl()).asJsoup()
-        }
-        return pages
+        val imageUrl = client.get(baseUrl + chapter.url).asJsoup().photoImageUrl()
+        return listOf(Page(0, imageUrl = imageUrl))
     }
 
     private fun buildSearchUrl(page: Int, query: String, filters: FilterList): HttpUrl {
-        val builder = "$baseUrl/search-photos/".toHttpUrl().newBuilder()
-        if (query.isNotBlank()) builder.addQueryParameter("q", query.trim())
+        val builder = baseUrl.toHttpUrl().newBuilder()
+            .addPathSegment("search-photos")
+        if (query.isNotBlank()) builder.addPathSegment(query.toSearchSlug())
         builder.addQueryParameter("sort", filters.sortValue())
         filters.minimumDuration()?.let { builder.addQueryParameter("min_duration", it) }
         filters.maximumDuration()?.let { builder.addQueryParameter("max_duration", it) }
@@ -82,21 +72,25 @@ abstract class EpornerImages : KeiSource() {
         val categories = filters.categoryValues()
         if (categories.first.isNotEmpty()) builder.addQueryParameter("categories", categories.first.joinToString(","))
         if (categories.second.isNotEmpty()) builder.addQueryParameter("exclude_categories", categories.second.joinToString(","))
-        if (page > 1) builder.addQueryParameter("page", page.toString())
+        if (page > 1) builder.addPathSegment(page.toString())
         return builder.build()
     }
 
     private fun parseSearch(document: Document): MangasPage {
-        val mangas = document.select("div.item a[href], li.thumb a[href], .photo-item a[href], .gallery-item a[href], a[href*='/photo-'], a[href*='/gallery-']")
+        val mangas = document.select("a[href*='/photo/']")
             .mapNotNull { link ->
                 val href = link.absUrl("href").ifBlank { link.attr("href").toAbsoluteUrl() }
-                val image = link.selectFirst("img") ?: link.parent()?.selectFirst("img") ?: return@mapNotNull null
-                val title = image.attr("alt").trim().ifBlank { link.attr("title").trim() }.ifBlank { link.text().trim() }
+                val image = link.selectFirst("img")
+                    ?: link.parent()?.selectFirst("img")
+                    ?: link.parent()?.parent()?.selectFirst("img")
+                val title = image?.attr("alt")?.trim().orEmpty()
+                    .ifBlank { link.attr("title").trim() }
+                    .ifBlank { link.text().trim().removePrefix("amateur photo").trim() }
                 if (href.isBlank() || title.isBlank()) return@mapNotNull null
                 SManga.create().apply {
                     setUrlWithoutDomain(href)
                     this.title = title
-                    thumbnail_url = image.attr("data-original").ifBlank { image.attr("data-src") }.ifBlank { image.attr("src") }.toAbsoluteUrl()
+                    thumbnail_url = image?.attr("data-original")?.ifBlank { image.attr("data-src") }?.ifBlank { image.attr("src") }?.toAbsoluteUrl()
                     initialized = true
                 }
             }
@@ -149,6 +143,20 @@ abstract class EpornerImages : KeiSource() {
         Filter.Separator(),
         Filter.Header("Categories: select Include, Any, or Exclude. Site limits: 5 included and 10 excluded."),
     )
+
+    private fun Document.photoImageUrl(): String = listOf(
+        selectFirst("meta[property='og:image']")?.attr("content"),
+        selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.let { image ->
+            image.attr("data-original").ifBlank { image.attr("data-src") }.ifBlank { image.attr("src") }
+        },
+    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isImageUrl() }
+        ?: error("Eporner photo page did not expose a public image URL")
+
+    private fun String.toSearchSlug() = trim()
+        .replace(Regex("\\s+"), "-")
+        .replace(Regex("[^\\p{L}\\p{N}-]+"), "-")
+        .replace(Regex("-{2,}"), "-")
+        .trim('-')
 
     private fun String.toToken() = lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
     private fun String.toAbsoluteUrl() = when {
