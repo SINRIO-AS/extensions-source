@@ -11,6 +11,7 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
+import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.nodes.Document
@@ -134,9 +135,10 @@ abstract class EpornerImages : KeiSource() {
     private class ProductionFilter : Filter.Select<String>("Production", PRODUCTION_LABELS)
     private class MinimumDurationFilter : Filter.Text("Minimum duration (minutes)")
     private class MaximumDurationFilter : Filter.Text("Maximum duration (minutes)")
-    private class CategoryFilter : Filter.Group<Filter.TriState>(CATEGORY_LABELS.map { Filter.TriState(it) })
+    private class CategoryTriState(name: String) : Filter.TriState(name)
+    private class CategoryFilter : Filter.Group<Filter.TriState>("Categories", CATEGORY_LABELS.map { CategoryTriState(it) })
 
-    override fun getFilterList() = FilterList(
+    override fun getFilterList(data: JsonElement?) = FilterList(
         Filter.Header("All Eporner photo search controls"),
         SortFilter(),
         QualityFilter(),
