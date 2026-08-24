@@ -165,7 +165,7 @@ abstract class EpornerImages : KeiSource() {
         selectFirst("#image, .photo img, img[data-original], img[data-src], img[src]")?.let { image ->
             image.attr("data-original").ifBlank { image.attr("data-src") }.ifBlank { image.attr("src") }
         },
-        ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isStaticImageUrl() }
+    ).mapNotNull { it?.toAbsoluteUrl() }.firstOrNull { it.isStaticImageUrl() }
         ?: error("Eporner did not return a static original image URL")
 
     private fun String.toSearchSlug() = trim()
