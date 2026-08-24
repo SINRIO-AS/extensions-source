@@ -20,7 +20,6 @@ import rx.Observable
 abstract class EpornerImages : HttpSource() {
     override val name = "Eporner Images"
     override val baseUrl = "https://www.eporner.com"
-    override val lang = "en"
     override val supportsLatest = true
 
     override fun headersBuilder() = super.headersBuilder()
