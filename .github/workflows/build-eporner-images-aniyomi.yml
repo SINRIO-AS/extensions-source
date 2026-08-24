@@ -1,0 +1,51 @@
+name: Build Eporner Images Aniyomi extension
+
+on:
+  push:
+    branches:
+      - eporner-images-aniyomi
+    paths:
+      - "src/en/epornerimages/**"
+      - ".github/workflows/build-eporner-images-aniyomi.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Eporner Images for Aniyomi
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build extension
+        run: ./gradlew :src:en:epornerimages:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find src/en/epornerimages/build/outputs/apk -type f -name "*.apk" | head -1)
+          test -n "$apk"
+          unzip -tq "$apk"
+          sha256sum "$apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: eporner-images-aniyomi-debug-apk
+          path: src/en/epornerimages/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 30
