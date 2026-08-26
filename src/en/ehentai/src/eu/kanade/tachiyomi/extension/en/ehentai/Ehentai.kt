@@ -60,6 +60,22 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         }
         network.client.newBuilder()
             .rateLimit(burst, interval) { it.host == baseUrl.toHttpUrl().host }
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val backupUrl = request.url.fragment
+                    ?: return@addInterceptor chain.proceed(request)
+                val primaryResult = runCatching { chain.proceed(request) }
+                val primaryResponse = primaryResult.getOrNull()
+                val primaryIsImage = primaryResponse?.isSuccessful == true &&
+                    primaryResponse.body?.contentType()?.type == "image"
+                if (primaryIsImage) return@addInterceptor primaryResponse
+                primaryResponse?.close()
+                val backupRequest = GET(backupUrl.toHttpUrl(), headersBuilder().build())
+                val backupImageUrl = chain.proceed(backupRequest).use { response ->
+                    imageUrlFromDocument(response.asJsoup(), allowBackup = false)
+                }
+                chain.proceed(request.newBuilder().url(backupImageUrl.toHttpUrl()).build())
+            }
             .build()
     }
 
@@ -409,8 +425,7 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         var imageUrl = ""
         for (attempt in 0 until preferences.requestRetries) {
             val document = getDocument(pageUrl.toHttpUrl())
-            imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
-                ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+            imageUrl = imageUrlFromDocument(document, pageUrl)
             if (imageUrl.isNotEmpty()) break
             synchronized(documentCache) { documentCache.remove(pageUrl) }
             if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
@@ -437,6 +452,19 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
 
     override fun imageRequest(page: Page): Request =
         GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
+
+    private fun imageUrlFromDocument(document: Document, pageUrl: String? = null, allowBackup: Boolean = true): String {
+        val imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
+            ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
+        if (!allowBackup || pageUrl.isNullOrEmpty() || imageUrl.isEmpty()) return imageUrl
+        val onclick = document.selectFirst("#loadfail")?.attr("onclick").orEmpty()
+        val nlValue = Regex("nl\\('(.+?)'\\)").find(onclick)?.groupValues?.get(1)
+        if (nlValue.isNullOrEmpty()) return imageUrl
+        val backupUrl = pageUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("nl", nlValue)
+            .build()
+        return "$imageUrl#$backupUrl"
+    }
 
     private fun getDocument(url: HttpUrl): Document {
         synchronized(documentCache) {
