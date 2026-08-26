@@ -64,17 +64,42 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
                 val request = chain.request()
                 val backupUrl = request.url.fragment
                     ?: return@addInterceptor chain.proceed(request)
+                var backupAttempted = false
+                fun requestBackup(): Response? {
+                    if (backupAttempted) return null
+                    backupAttempted = true
+                    val pageReferer = request.header("Referer") ?: backupUrl
+                    val backupImageUrl = runCatching {
+                        val backupRequest = GET(
+                            backupUrl.toHttpUrl(),
+                            headersBuilder().set("Referer", pageReferer).build(),
+                        )
+                        chain.proceed(backupRequest).use { response ->
+                            if (!response.isSuccessful) return@runCatching ""
+                            imageUrlFromDocument(response.asJsoup(), allowBackup = false)
+                        }
+                    }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+                    val backupResponse = runCatching {
+                        chain.proceed(request.newBuilder().url(backupImageUrl.toHttpUrl()).build())
+                    }.getOrNull() ?: return null
+                    if (isUsableImage(backupResponse)) return backupResponse
+                    backupResponse.close()
+                    return null
+                }
+                if (preferences.preferRegularImages) {
+                    requestBackup()?.let { return@addInterceptor it }
+                }
                 val primaryResult = runCatching { chain.proceed(request) }
                 val primaryResponse = primaryResult.getOrNull()
-                val primaryIsImage = primaryResponse?.isSuccessful == true &&
-                    primaryResponse.body?.contentType()?.type == "image"
-                if (primaryIsImage) return@addInterceptor primaryResponse
-                primaryResponse?.close()
-                val backupRequest = GET(backupUrl.toHttpUrl(), headersBuilder().build())
-                val backupImageUrl = chain.proceed(backupRequest).use { response ->
-                    imageUrlFromDocument(response.asJsoup(), allowBackup = false)
+                if (primaryResponse != null && isUsableImage(primaryResponse)) {
+                    return@addInterceptor primaryResponse
                 }
-                chain.proceed(request.newBuilder().url(backupImageUrl.toHttpUrl()).build())
+                requestBackup()?.let {
+                    primaryResponse?.close()
+                    return@addInterceptor it
+                }
+                primaryResponse?.let { return@addInterceptor it }
+                primaryResult.getOrThrow()
             }
             .build()
     }
@@ -452,6 +477,11 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
 
     override fun imageRequest(page: Page): Request =
         GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
+
+    private fun isUsableImage(response: Response): Boolean =
+        response.isSuccessful &&
+            response.body?.contentType()?.type == "image" &&
+            !response.request.url.encodedPath.endsWith("/blank.gif", ignoreCase = true)
 
     private fun imageUrlFromDocument(document: Document, pageUrl: String? = null, allowBackup: Boolean = true): String {
         val imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
