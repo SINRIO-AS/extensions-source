@@ -26,6 +26,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.seconds
 
@@ -40,6 +43,10 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
     private val resultHistory = object : LinkedHashMap<String, MutableSet<String>>(RESULT_HISTORY_SIZE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<String>>?): Boolean =
             size > RESULT_HISTORY_SIZE
+    }
+    private val imageUrlCache = object : LinkedHashMap<String, String>(IMAGE_URL_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > IMAGE_URL_CACHE_SIZE
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) = setupEhentaiPreferenceScreen(screen)
@@ -338,7 +345,13 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
             imagePages += galleryDocument(gridUrl).imagePageUrls()
         }
 
-        return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
+        val uniquePages = imagePages.distinct()
+        val prefetched = prefetchImageUrls(uniquePages.take(PREFETCH_PAGE_COUNT))
+        return uniquePages.mapIndexed { index, pageUrl ->
+            prefetched[pageUrl]?.let { imageUrl ->
+                Page(index, url = pageUrl, imageUrl = imageUrl)
+            } ?: Page(index, url = pageUrl)
+        }
     }
 
     private fun Document.imagePageUrls(): List<String> =
@@ -359,17 +372,30 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
             }
         }
 
-    override suspend fun getImageUrl(page: Page): String {
+    override suspend fun getImageUrl(page: Page): String = resolveImageUrl(page.url)
+
+    private suspend fun resolveImageUrl(pageUrl: String): String {
+        synchronized(imageUrlCache) {
+            imageUrlCache[pageUrl]?.let { return it }
+        }
         var imageUrl = ""
-        repeat(preferences.requestRetries) { attempt ->
-            val document = getDocument(page.url.toHttpUrl())
+        for (attempt in 0 until preferences.requestRetries) {
+            val document = getDocument(pageUrl.toHttpUrl())
             imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
                 ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
-            if (imageUrl.isNotEmpty()) return imageUrl
-            synchronized(documentCache) { documentCache.remove(page.url) }
+            if (imageUrl.isNotEmpty()) break
+            synchronized(documentCache) { documentCache.remove(pageUrl) }
             if (attempt < preferences.requestRetries - 1) delay((attempt + 1) * 500L)
         }
-        error("E-Hentai did not return an image URL for this page")
+        return imageUrl.takeIf { it.isNotEmpty() }?.also {
+            synchronized(imageUrlCache) { imageUrlCache[pageUrl] = it }
+        } ?: error("E-Hentai did not return an image URL for this page")
+    }
+
+    private suspend fun prefetchImageUrls(pageUrls: List<String>): Map<String, String> = coroutineScope {
+        pageUrls.map { pageUrl ->
+            async { pageUrl to runCatching { resolveImageUrl(pageUrl) }.getOrNull() }
+        }.awaitAll().mapNotNull { (pageUrl, imageUrl) -> imageUrl?.let { pageUrl to it } }.toMap()
     }
 
     override fun imageRequest(page: Page): Request =
@@ -434,6 +460,8 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
         const val MAX_INCLUSION_TERMS = 5
         const val MAX_EXCLUSION_TERMS = 10
         const val DOCUMENT_CACHE_SIZE = 24
+        const val IMAGE_URL_CACHE_SIZE = 256
+        const val PREFETCH_PAGE_COUNT = 4
         const val RESULT_HISTORY_SIZE = 12
         const val MAX_HISTORY_RESULTS = 2000
         val coverUrlRegex = Regex("""url\(['\"]?([^'")]+)""")
