@@ -8,6 +8,7 @@ import androidx.preference.SwitchPreferenceCompat
 private const val RATE_PROFILE_PREF = "request_rate_profile"
 private const val RETRIES_PREF = "request_retries"
 private const val RICH_DETAILS_PREF = "rich_details"
+private const val PREFER_REGULAR_IMAGES_PREF = "prefer_regular_images"
 
 internal fun setupEhentaiPreferenceScreen(screen: PreferenceScreen) {
     ListPreference(screen.context).apply {
@@ -34,6 +35,13 @@ internal fun setupEhentaiPreferenceScreen(screen: PreferenceScreen) {
         summary = "Includes the full tag list, uploader data, and gallery description."
         setDefaultValue(true)
     }.also(screen::addPreference)
+
+    SwitchPreferenceCompat(screen.context).apply {
+        key = PREFER_REGULAR_IMAGES_PREF
+        title = "Prefer regular image server"
+        summary = "Avoids slow H@H image routes when E-Hentai provides a reload link."
+        setDefaultValue(true)
+    }.also(screen::addPreference)
 }
 
 internal val SharedPreferences.requestRateProfile: String
@@ -44,4 +52,7 @@ internal val SharedPreferences.requestRetries: Int
 
 internal val SharedPreferences.richDetails: Boolean
     get() = getBoolean(RICH_DETAILS_PREF, true)
+
+internal val SharedPreferences.preferRegularImages: Boolean
+    get() = getBoolean(PREFER_REGULAR_IMAGES_PREF, true)
 

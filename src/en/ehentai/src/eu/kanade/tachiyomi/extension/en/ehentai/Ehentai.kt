@@ -24,6 +24,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
 import kotlinx.coroutines.async
@@ -62,20 +63,42 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
                 val request = chain.request()
                 val backupUrl = request.url.fragment
                     ?: return@addInterceptor chain.proceed(request)
+                var backupAttempted = false
+                fun requestBackup(): Response? {
+                    if (backupAttempted) return null
+                    backupAttempted = true
+                    val pageReferer = request.header("Referer") ?: backupUrl
+                    val backupImageUrl = runCatching {
+                        val backupRequest = GET(
+                            backupUrl.toHttpUrl(),
+                            headersBuilder().set("Referer", pageReferer).build(),
+                        )
+                        chain.proceed(backupRequest).use { response ->
+                            if (!response.isSuccessful) return@runCatching ""
+                            imageUrlFromDocument(response.asJsoup(), allowBackup = false)
+                        }
+                    }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+                    val backupResponse = runCatching {
+                        chain.proceed(request.newBuilder().url(backupImageUrl.toHttpUrl()).build())
+                    }.getOrNull() ?: return null
+                    if (isUsableImage(backupResponse)) return backupResponse
+                    backupResponse.close()
+                    return null
+                }
+                if (preferences.preferRegularImages) {
+                    requestBackup()?.let { return@addInterceptor it }
+                }
                 val primaryResult = runCatching { chain.proceed(request) }
                 val primaryResponse = primaryResult.getOrNull()
-                val primaryIsImage = primaryResponse?.isSuccessful == true &&
-                    primaryResponse.body?.contentType()?.type == "image"
-                if (primaryIsImage) return@addInterceptor primaryResponse
-                primaryResponse?.close()
-                if (primaryResult.isFailure) {
-                    // Continue with the E-Hentai fallback below when the H@H request fails.
+                if (primaryResponse != null && isUsableImage(primaryResponse)) {
+                    return@addInterceptor primaryResponse
                 }
-                val backupRequest = GET(backupUrl.toHttpUrl(), headersBuilder().build())
-                val backupImageUrl = chain.proceed(backupRequest).use { response ->
-                    imageUrlFromDocument(response.asJsoup(), allowBackup = false)
+                requestBackup()?.let {
+                    primaryResponse?.close()
+                    return@addInterceptor it
                 }
-                chain.proceed(request.newBuilder().url(backupImageUrl.toHttpUrl()).build())
+                primaryResponse?.let { return@addInterceptor it }
+                primaryResult.getOrThrow()
             }
     }
 
@@ -418,6 +441,11 @@ abstract class Ehentai : KeiSource(), ConfigurableSource {
 
     override fun imageRequest(page: Page): Request =
         GET(page.imageUrl!!.toHttpUrl(), headersBuilder().set("Referer", page.url).build())
+
+    private fun isUsableImage(response: Response): Boolean =
+        response.isSuccessful &&
+            response.body?.contentType()?.type == "image" &&
+            !response.request.url.encodedPath.endsWith("/blank.gif", ignoreCase = true)
 
     private fun imageUrlFromDocument(document: Document, pageUrl: String? = null, allowBackup: Boolean = true): String {
         val imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
