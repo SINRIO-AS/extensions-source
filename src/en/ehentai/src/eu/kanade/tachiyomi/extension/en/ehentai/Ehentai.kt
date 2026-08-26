@@ -26,6 +26,8 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import java.util.LinkedHashMap
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import rx.Observable
 import kotlin.time.Duration.Companion.seconds
 
@@ -40,6 +42,10 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
     private val resultHistory = object : LinkedHashMap<String, MutableSet<String>>(RESULT_HISTORY_SIZE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<String>>?): Boolean =
             size > RESULT_HISTORY_SIZE
+    }
+    private val imageUrlCache = object : LinkedHashMap<String, String>(IMAGE_URL_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > IMAGE_URL_CACHE_SIZE
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) = setupEhentaiPreferenceScreen(screen)
@@ -365,7 +371,13 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
             imagePages += galleryDocument(gridUrl).imagePageUrls()
         }
 
-        return imagePages.distinct().mapIndexed { index, pageUrl -> Page(index, url = pageUrl) }
+        val uniquePages = imagePages.distinct()
+        val prefetched = prefetchImageUrls(uniquePages.take(PREFETCH_PAGE_COUNT))
+        return uniquePages.mapIndexed { index, pageUrl ->
+            prefetched[pageUrl]?.let { imageUrl ->
+                Page(index, url = pageUrl, imageUrl = imageUrl)
+            } ?: Page(index, url = pageUrl)
+        }
     }
 
     private fun Document.imagePageUrls(): List<String> =
@@ -387,17 +399,40 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         }
 
     override fun fetchImageUrl(page: Page): Observable<String> = Observable.fromCallable {
+        resolveImageUrl(page.url)
+    }
+
+    private fun resolveImageUrl(pageUrl: String): String {
+        synchronized(imageUrlCache) {
+            imageUrlCache[pageUrl]?.let { return it }
+        }
         var imageUrl = ""
         for (attempt in 0 until preferences.requestRetries) {
-            val document = getDocument(page.url.toHttpUrl())
+            val document = getDocument(pageUrl.toHttpUrl())
             imageUrl = document.selectFirst("#img")?.absUrl("src")?.takeIf { it.isNotEmpty() }
                 ?: document.selectFirst("a[href*='/fullimg/']")?.absUrl("href").orEmpty()
             if (imageUrl.isNotEmpty()) break
-            synchronized(documentCache) { documentCache.remove(page.url) }
+            synchronized(documentCache) { documentCache.remove(pageUrl) }
             if (attempt < preferences.requestRetries - 1) Thread.sleep((attempt + 1) * 500L)
         }
-        imageUrl.takeIf { it.isNotEmpty() }
-            ?: error("E-Hentai did not return an image URL for this page")
+        return imageUrl.takeIf { it.isNotEmpty() }?.also {
+            synchronized(imageUrlCache) { imageUrlCache[pageUrl] = it }
+        } ?: error("E-Hentai did not return an image URL for this page")
+    }
+
+    private fun prefetchImageUrls(pageUrls: List<String>): Map<String, String> {
+        if (pageUrls.isEmpty()) return emptyMap()
+        val executor = Executors.newFixedThreadPool(PREFETCH_THREADS)
+        return try {
+            val tasks = pageUrls.map { pageUrl ->
+                Callable { pageUrl to runCatching { resolveImageUrl(pageUrl) }.getOrNull() }
+            }
+            executor.invokeAll(tasks).mapNotNull { future ->
+                future.get().second?.let { imageUrl -> future.get().first to imageUrl }
+            }.toMap()
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     override fun imageRequest(page: Page): Request =
@@ -463,6 +498,9 @@ abstract class Ehentai : HttpSource(), ConfigurableSource {
         const val MAX_INCLUSION_TERMS = 5
         const val MAX_EXCLUSION_TERMS = 10
         const val DOCUMENT_CACHE_SIZE = 24
+        const val IMAGE_URL_CACHE_SIZE = 256
+        const val PREFETCH_PAGE_COUNT = 4
+        const val PREFETCH_THREADS = 4
         const val RESULT_HISTORY_SIZE = 12
         const val MAX_HISTORY_RESULTS = 2000
         val coverUrlRegex = Regex("""url\(['\"]?([^'")]+)""")
